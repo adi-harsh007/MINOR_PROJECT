@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.env.example
+
+# Models & Data
+models/*.pt
+# models/*.json  <-- Keep thresholds in git as they define logic
+data/pathology.db
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Logs & Temporary
+*.log
+verify_output.txt
+env_debug.txt
+
+# IDE & OS
+.vscode/
+.idea/
+.gemini/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environments
+.env
+.venv
+env/
+venv/
+node_modules/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/

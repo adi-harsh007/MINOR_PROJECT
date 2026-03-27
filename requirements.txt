@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+torch
+torchvision
+torchaudio
+pillow
+timm
+sqlalchemy
+python-dotenv

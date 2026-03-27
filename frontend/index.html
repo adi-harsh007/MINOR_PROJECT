@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>DermaScan AI — Skin Cancer Diagnostic Engine</title>
+    <meta name="description"
+        content="AI-powered skin cancer diagnostic tool using EfficientNet-B3 deep learning model for 7-class lesion classification." />
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;900&family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+        rel="stylesheet" />
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "bg-primary": "#0a0e14",
+                        "bg-panel": "#111620",
+                        "bg-card": "#161c28",
+                        "bg-hover": "#1c2436",
+                        "accent": "#00d4ff",
+                        "accent-dim": "#0098b8",
+                        "accent-glow": "rgba(0,212,255,0.15)",
+                        "danger": "#ff4d6a",
+                        "danger-dim": "#a8001c",
+                        "safe": "#00e29e",
+                        "safe-dim": "#00a171",
+                        "txt-primary": "#e4e8f1",
+                        "txt-secondary": "#6b7a99",
+                        "txt-muted": "#3a4660",
+                        "border-subtle": "#1e2740",
+                        "border-accent": "rgba(0,212,255,0.2)",
+                    },
+                    fontFamily: {
+                        headline: ["Space Grotesk", "sans-serif"],
+                        body: ["Inter", "sans-serif"],
+                        mono: ["IBM Plex Mono", "monospace"],
+                    },
+                },
+            },
+        };
+    </script>
+    <style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+        body {
+            background: #0a0e14;
+        }
+
+        /* Subtle animated grid */
+        .scan-grid {
+            background-image: radial-gradient(circle at 1px 1px, rgba(0, 212, 255, 0.04) 1px, transparent 0);
+            background-size: 28px 28px;
+        }
+
+        /* Glow effects */
+        .glow-accent {
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.15), 0 0 60px rgba(0, 212, 255, 0.05);
+        }
+
+        .glow-danger {
+            box-shadow: 0 0 20px rgba(255, 77, 106, 0.2);
+        }
+
+        /* Drag active state */
+        .drag-active {
+            border-color: #00d4ff !important;
+            background: rgba(0, 212, 255, 0.06) !important;
+        }
+
+        /* Smooth transitions */
+        .view-transition {
+            animation: fadeSlideIn 0.3s ease-out;
+        }
+
+        @keyframes fadeSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #1e2740;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00d4ff;
+        }
+
+        /* Toast */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .toast {
+            background: #161c28;
+            border: 1px solid #00d4ff;
+            color: #e4e8f1;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 11px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            transition: opacity 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .toast.error {
+            border-color: #ff4d6a;
+        }
+
+        .toast.success {
+            border-color: #00e29e;
+        }
+
+        /* Pulse dot */
+        @keyframes pulseDot {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        .pulse-dot {
+            animation: pulseDot 1.5s ease-in-out infinite;
+        }
+
+        /* Confidence ring animation */
+        @keyframes drawRing {
+            from {
+                stroke-dashoffset: 264;
+            }
+        }
+
+        .conf-ring {
+            animation: drawRing 1s ease-out forwards;
+        }
+    </style>
+</head>
+
+<body class="text-txt-primary font-body overflow-x-hidden selection:bg-accent/20 selection:text-accent">
+
+    <!-- ═══════════════════════════════════════════════════════════
+     SHELL: Persistent sidebar + main content area
+     ═══════════════════════════════════════════════════════════ -->
+
+    <!-- Left Sidebar -->
+    <aside id="sidebar"
+        class="fixed left-0 top-0 h-full z-40 w-[240px] bg-bg-panel border-r border-border-subtle flex flex-col">
+        <!-- Brand -->
+        <div class="p-6 pb-4">
+            <div class="flex items-center gap-2.5 mb-1">
+                <span class="material-symbols-outlined text-accent text-2xl"
+                    style="font-variation-settings:'FILL' 1;">genetics</span>
+                <h1
+                    class="text-accent font-headline font-black text-lg tracking-tighter uppercase drop-shadow-[0_0_8px_rgba(0,212,255,0.4)]">
+                    DermaScan AI</h1>
+            </div>
+            <p class="font-mono text-[9px] text-txt-muted tracking-[0.15em] uppercase ml-[34px]">Clinical Engine v3.0
+            </p>
+        </div>
+
+        <!-- Nav -->
+        <nav class="flex-1 mt-2 flex flex-col gap-0.5 px-2">
+            <button id="nav-dashboard" onclick="navigate('dashboard')"
+                class="nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-headline font-medium tracking-tight transition-all duration-200">
+                <span class="material-symbols-outlined text-[20px]">dashboard</span>
+                Dashboard
+            </button>
+            <button id="nav-history" onclick="navigate('history')"
+                class="nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-headline font-medium tracking-tight transition-all duration-200">
+                <span class="material-symbols-outlined text-[20px]">history</span>
+                History
+            </button>
+        </nav>
+
+        <!-- Footer -->
+        <div class="p-4 border-t border-border-subtle">
+            <div class="flex items-center gap-2 px-2 py-2">
+                <div class="w-2 h-2 rounded-full bg-safe pulse-dot"></div>
+                <span class="font-mono text-[9px] text-txt-muted uppercase tracking-wider">EfficientNet-B3 Online</span>
+            </div>
+            <div class="flex items-center gap-2 px-2 py-1">
+                <span class="font-mono text-[9px] text-txt-muted uppercase tracking-wider">Model: latest.pt</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" class="ml-[240px] min-h-screen scan-grid">
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <script src="/js/app.js"></script>
+</body>
+
+</html>
