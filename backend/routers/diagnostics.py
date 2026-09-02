@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Depends, Header
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Depends, Header
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import os
@@ -9,7 +9,8 @@ from io import BytesIO
 
 from ..database import get_db
 from ..models import DiagnosticSession
-from ..config import UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, ADMIN_TOKEN
+from ..config import (UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, ADMIN_TOKEN,
+                      ANATOMIC_SITES)
 from ..ml_engine import SkinCancerPredictor
 
 router = APIRouter(prefix="/api", tags=["Diagnostics"])
@@ -43,9 +44,17 @@ def require_admin(x_admin_token: str = Header(default="")):
 @router.post("/analyze")
 async def analyze_lesion(
     file: UploadFile = File(...),
+    site: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
-    """Upload an image and run synchronous EfficientNet-B3 inference."""
+    """Upload an image and run synchronous EfficientNet-B3 inference.
+
+    `site` is the anatomic site chosen in the UI. It is recorded alongside the
+    result but does not influence inference: the model takes only the image.
+    """
+    # Only values the UI actually offers are stored; anything else is discarded
+    # rather than written through to the record.
+    anatomic_site = site.strip() if site and site.strip() in ANATOMIC_SITES else None
     # The client-supplied extension is never trusted as a path component.
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -95,7 +104,8 @@ async def analyze_lesion(
 
         # Create session only for valid scans
         session = DiagnosticSession(
-            image_path=filepath, 
+            image_path=filepath,
+            anatomic_site=anatomic_site,
             status="completed",
             prediction=result["prediction"],
             confidence=result["confidence"],
@@ -115,6 +125,7 @@ async def analyze_lesion(
             "threshold": result["threshold"],
             "scores": result["scores"],
             "is_high_risk": session.is_high_risk,
+            "anatomic_site": session.anatomic_site,
             "heatmap_base64": result.get("heatmap_base64"),
         }
     except HTTPException:
@@ -143,6 +154,7 @@ def get_history(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_
             "prediction": s.prediction,
             "confidence": s.confidence,
             "is_high_risk": s.is_high_risk,
+            "anatomic_site": s.anatomic_site,
             "scores": s.all_scores,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         }

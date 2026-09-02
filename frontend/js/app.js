@@ -462,7 +462,6 @@ async function runAnalysis() {
 
         // Store image preview URL in result
         result._previewUrl = viewportImg ? viewportImg.src : "";
-        result.anatomic_site = state.selectedAnatomicSite;
 
         if (result.heatmap_base64) {
             state.heatmapBase64 = result.heatmap_base64;
@@ -778,7 +777,7 @@ function exportHistoryCSV() {
         return;
     }
 
-    const headers = ["ID", "Timestamp", "Prediction", "Pathology_Name", "Confidence", "Is_High_Risk"];
+    const headers = ["ID", "Timestamp", "Prediction", "Pathology_Name", "Confidence", "Is_High_Risk", "Anatomic_Site"];
     const rows = state.history.map(item => {
         const meta = PATHOLOGY_META[item.prediction] || { name: item.prediction };
         return [
@@ -787,7 +786,8 @@ function exportHistoryCSV() {
             `"${item.prediction}"`,
             `"${meta.name}"`,
             (item.confidence * 100).toFixed(2) + "%",
-            item.is_high_risk ? "Yes" : "No"
+            item.is_high_risk ? "Yes" : "No",
+            `"${item.anatomic_site || ""}"`
         ].join(",");
     });
 

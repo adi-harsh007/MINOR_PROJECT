@@ -36,6 +36,17 @@ SAMPLES_DIR = os.path.join(BASE_DIR, "samples")
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))  # 10 MB
 
+# Anatomic sites offered by the UI (data-site attributes in index.html).
+# Anything else submitted is stored as None rather than trusted.
+ANATOMIC_SITES = {
+    "Head & Neck",
+    "Anterior Torso",
+    "Posterior Torso",
+    "Upper Extremities",
+    "Lower Extremities",
+    "Palms & Soles",
+}
+
 # ── Security ────────────────────────────────────────────────
 # Comma-separated list of allowed browser origins. Defaults to local dev only.
 CORS_ORIGINS = [

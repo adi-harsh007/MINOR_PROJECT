@@ -8,6 +8,7 @@ class DiagnosticSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     image_path = Column(String(500), nullable=False)
+    anatomic_site = Column(String(64), nullable=True)
     status = Column(String(50), default="pending")  # pending | processing | completed | failed
 
     # Results

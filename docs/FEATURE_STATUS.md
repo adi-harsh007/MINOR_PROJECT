@@ -10,7 +10,7 @@ planned work in the present tense and listed capabilities that were never built.
 | :--- | :--- | :--- |
 | Image upload and drag-drop | `handleFileSelected()` | Extension and size are enforced server-side. |
 | Reference sample gallery | `CLINICAL_SAMPLES` | Three real images served from `/samples`: two HAM10000 lesions with labels sourced from the split manifests, and one non-skin control. |
-| Anatomic site tags | `view-console` | Recorded in frontend state only. The backend ignores the `site` field — it is not stored and does not affect inference. |
+| Anatomic site tags | `view-console` | Submitted with the scan and stored on the record. Only the six sites the UI offers are accepted; anything else is discarded. It does not affect inference — the model sees only the image. |
 | Zoom / pan viewport | `updateViewportTransform()` | Image and heatmap canvas transform together. |
 | Brightness / contrast / saturation | `updateCalibrationFilters()` | CSS filters for viewing only. They do not change the image sent for inference. |
 | Grad-CAM overlay | `renderGradCamHeatmap()` | Real attribution only. When the API returns `null` the canvas stays empty and the UI says so. |
@@ -21,7 +21,7 @@ planned work in the present tense and listed capabilities that were never built.
 | Analytics view | `view-analytics` | Scan counts and class distribution computed client-side from history. |
 | Side-by-side comparison | `view-compare` | Two scans in adjacent viewports. |
 | Knowledge reference | `view-knowledge` | Static reference cards for the 7 classes. |
-| CSV export | history view | Client-side download of the history table. |
+| CSV export | history view | Client-side download of the history table, including the anatomic site. |
 | PDF report export | `downloadClinicalReport()` | Client-side via html2pdf, falling back to `window.print()`. There is no server-side PDF endpoint. |
 | Toast notifications | `toast()` | Creates its own container; `index.html` does not define one. |
 | Delete a history record | `deleteHistoryRecord()` | Sends `X-Admin-Token`. The token is requested once and kept in this browser's `localStorage`; a rejected token is discarded so the next attempt re-asks. |
@@ -43,7 +43,5 @@ These appeared in the previous roadmap. None of them exist in the code:
 
 - **Deleting requires `ADMIN_TOKEN` to be set server-side.** With it unset the API
   returns 403 and the UI reports deletion as disabled, which is the default state.
-- **Anatomic site is collected but discarded.** The UI implies it is part of the
-  record; it is not persisted.
-- **`/api/health` is static.** It reports a hardcoded engine name and version rather
-  than the loaded checkpoint.
+- **Anatomic site is recorded but unused by the model.** It is stored for the record
+  and shown in exports; inference takes the image alone.

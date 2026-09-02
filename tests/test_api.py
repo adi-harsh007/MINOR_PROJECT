@@ -29,6 +29,25 @@ def test_health(client):
     assert client.get("/api/health").json()["status"] == "ok"
 
 
+def test_health_reports_real_configuration(client):
+    """Health must describe the actual serving config, not a hardcoded string."""
+    from backend.config import IMG_SIZE, MODEL_ARCH
+
+    model = client.get("/api/health").json()["model"]
+    assert model["architecture"] == MODEL_ARCH
+    assert model["input_size"] == IMG_SIZE
+    assert "loaded" in model and isinstance(model["loaded"], bool)
+
+
+def test_health_does_not_force_model_load(client):
+    """A health check must not pull the checkpoint into memory."""
+    import backend.routers.diagnostics as diagnostics
+
+    before = diagnostics._predictor
+    client.get("/api/health")
+    assert diagnostics._predictor is before
+
+
 def test_index_and_samples_are_served(client):
     assert client.get("/").status_code == 200
     assert client.get("/samples/nv.jpg").status_code == 200
@@ -150,6 +169,54 @@ def test_delete_all_with_token_removes_rows_and_files(client, lesion, admin_head
     r = client.delete("/api/history/all", headers=admin_headers)
     assert r.status_code == 200
     assert client.get("/api/history").json() == []
+
+
+@pytest.mark.slow
+def test_anatomic_site_is_persisted_and_returned(client, lesion):
+    """The UI collects an anatomic site; it must survive into the record."""
+    r = client.post("/api/analyze",
+                    files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                    data={"site": "Palms & Soles"})
+    assert r.status_code == 200
+    assert r.json()["anatomic_site"] == "Palms & Soles"
+    assert client.get("/api/history").json()[0]["anatomic_site"] == "Palms & Soles"
+
+
+@pytest.mark.slow
+def test_unknown_anatomic_site_is_discarded(client, lesion):
+    """Only sites the UI offers are stored; anything else is dropped."""
+    r = client.post("/api/analyze",
+                    files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                    data={"site": "'; DROP TABLE diagnostic_sessions;--"})
+    assert r.status_code == 200
+    assert r.json()["anatomic_site"] is None
+
+
+def test_migration_adds_missing_columns(tmp_path):
+    """A database created before the column existed must be migrated, not broken."""
+    import sqlite3
+
+    db = tmp_path / "legacy.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE diagnostic_sessions ("
+                "id INTEGER PRIMARY KEY, image_path VARCHAR(500) NOT NULL)")
+    con.commit()
+    con.close()
+
+    from sqlalchemy import create_engine, inspect
+    import backend.database as database
+
+    original = database.engine
+    database.engine = create_engine(f"sqlite:///{db}",
+                                    connect_args={"check_same_thread": False})
+    try:
+        database._add_missing_columns()
+        cols = {c["name"] for c in inspect(database.engine).get_columns("diagnostic_sessions")}
+        assert "anatomic_site" in cols
+        database._add_missing_columns()   # idempotent
+    finally:
+        database.engine.dispose()
+        database.engine = original
 
 
 def test_history_limit_is_bounded(client):

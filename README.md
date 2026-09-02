@@ -91,18 +91,20 @@ path `/api`, so it cannot be hosted on a separate port without changing `API_BAS
 
 2. **API Inference Request**:
    - Clicking **"Begin AI Analysis"** sends a multipart `POST` to `/api/analyze` with the
-     image binary. A `site` field is also sent, but the backend currently ignores it — the
-     anatomic site is not stored and does not affect inference.
+     image binary and a `site` field. The site is validated against the six values the
+     UI offers and stored on the record; it does not affect inference.
 
 3. **Backend ML Pipeline Execution**:
    - **OOD Gatekeeper**: `backend/ood.py` applies illumination-invariant image statistics (relative contrast, high-frequency ratio, chromatic hue), then a feature-space check once fitted.
    - **EfficientNet-B3 Pass**: Image is resized to 300x300 (matching training) and normalized. Forward pass computes logits for 7 pathology classes (MEL, NV, BCC, AKIEC, BKL, DF, VASC).
    - **Grad-CAM Activation Engine**: Backward pass on `conv_head` layer computes gradient-weighted feature maps, rendering a Jet colormap (Blue -> Red) heatmap.
-   - **Database Log**: SQLAlchemy saves diagnosis details to `data/pathology.db`.
+   - **Database Log**: SQLAlchemy writes the prediction, confidence, threshold, all
+     seven scores, the anatomic site and a high-risk flag to `data/pathology.db`.
 
 4. **Frontend Response & Visualization**:
    - The API returns `session_id`, `prediction`, `confidence`, `threshold`, the seven
-     class `scores`, an `is_high_risk` boolean, and `heatmap_base64` (which is `null` when
+     class `scores`, an `is_high_risk` boolean, `anatomic_site`, and `heatmap_base64`
+     (which is `null` when
      attribution could not be computed). Risk wording and any ABCDE guidance shown in the
      UI are produced client-side from the predicted class — they are not API fields.
    - `app.js` updates view to **Diagnostic Results**, draws the Grad-CAM heatmap onto `<canvas id="console-heatmap-canvas">`, and synchronizes zoom/pan transforms.
@@ -119,8 +121,9 @@ Verified against the source. Anything not listed here does not exist.
 - `serve_index()` — serves `frontend/index.html`.
 - `favicon()` — returns 204 No Content.
 - `lifespan()` — creates database tables on startup.
-- `health_check()` — returns a static `{status, engine, version}` payload. The engine
-  string is hardcoded and does not reflect the loaded checkpoint.
+- `health_check()` — reports the real serving configuration (architecture, checkpoint
+  name and presence, input size, whether the model has been loaded). It does not force
+  a model load.
 
 #### `ml_engine.py` — `SkinCancerPredictor`
 - `__init__()` — builds the architecture named by `MODEL_ARCH`, loads the checkpoint
@@ -159,7 +162,7 @@ Verified against the source. Anything not listed here does not exist.
 - `get_db()` — session dependency.
 - `DiagnosticSession` — the only table (`diagnostic_sessions`), with fields
   `id`, `image_path`, `status`, `prediction`, `confidence`, `threshold_used`,
-  `all_scores`, `is_high_risk`, `created_at`, `completed_at`.
+  `all_scores`, `is_high_risk`, `anatomic_site`, `created_at`, `completed_at`.
 
 ### Frontend (`frontend/js/app.js`)
 - `navigate(viewId, payload)` — swaps between `view-console`, `view-results`,

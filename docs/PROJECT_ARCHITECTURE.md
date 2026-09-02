@@ -53,9 +53,9 @@ relative path `/api`. It therefore cannot be hosted separately without changing
 
 ## Request Flow
 
-1. **Upload.** The browser POSTs `multipart/form-data` to `/api/analyze`. It also
-   sends a `site` field (anatomic site) which the **backend currently ignores** —
-   it is neither stored nor used in inference.
+1. **Upload.** The browser POSTs `multipart/form-data` to `/api/analyze`, including a
+   `site` field. The site is validated against the six values the UI offers and stored
+   on the record; unrecognised values are discarded. It does not affect inference.
 2. **Validation.** The extension is checked against an allowlist, the body against
    a 10 MB cap, and the image is validated by decoding it. The client-supplied
    `content_type` is not trusted.
@@ -71,7 +71,9 @@ relative path `/api`. It therefore cannot be hosted separately without changing
 6. **Attribution.** Grad-CAM over `conv_head`, returned as a base64 PNG. If it
    cannot be computed the API returns `null` — never a placeholder image.
 7. **Persistence.** A `diagnostic_sessions` row is written with the prediction,
-   confidence, threshold used, all seven scores, and a high-risk flag.
+   confidence, threshold used, all seven scores, the anatomic site, and a high-risk
+   flag. Columns added after a database was created are applied on startup by
+   `_add_missing_columns()`, since `create_all()` never alters an existing table.
 8. **Response.** JSON is rendered by the SPA, which draws the heatmap on a canvas
    overlaying the lesion image.
 
@@ -83,11 +85,11 @@ Rejected scans are not persisted, and their uploaded file is deleted.
 
 | Method | Path | Notes |
 | :--- | :--- | :--- |
-| `POST` | `/api/analyze` | Inference and OOD gating. Returns `session_id`, `prediction`, `confidence`, `threshold`, `scores`, `is_high_risk`, `heatmap_base64`. |
+| `POST` | `/api/analyze` | Inference and OOD gating. Returns `session_id`, `prediction`, `confidence`, `threshold`, `scores`, `is_high_risk`, `anatomic_site`, `heatmap_base64`. |
 | `GET` | `/api/history` | Completed sessions, newest first. `limit` is bounded to 1–200. |
 | `DELETE` | `/api/history/all` | Deletes every session and its image. **Requires `X-Admin-Token`.** |
 | `DELETE` | `/api/history/{id}` | Deletes one session. **Requires `X-Admin-Token`.** |
-| `GET` | `/api/health` | Static status, engine name, and version string. |
+| `GET` | `/api/health` | Serving configuration: architecture, checkpoint name and presence, input size, and whether the model has been loaded yet. Does not trigger a load. |
 
 Both `DELETE` endpoints return 403 when `ADMIN_TOKEN` is unset, which is the
 default — they are disabled unless deliberately enabled.
