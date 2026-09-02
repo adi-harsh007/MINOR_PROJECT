@@ -6,9 +6,6 @@ This document provides technical specifications and performance metrics for the 
 
 Before specialized neural analysis, clinicians often use the **ABCDE criteria** for the visual assessment of pigmented lesions, particularly for identifying potential melanoma.
 
-![Figure 1.1: ABCDE rules for visual clinical diagnosis of Melanoma](./abcde_rules.png)
-*Figure 1.1: Traditional ABCDE rules for visual clinical diagnosis of Melanoma.*
-
 | Rule | Aspect | Description |
 | :--- | :--- | :--- |
 | **A** | Asymmetry | One half of the mole does not match the other. |
@@ -36,8 +33,10 @@ The model uses a standardized ImageNet-based preprocessing pipeline:
 
 The model is trained on the HAM10000 dataset to recognize the following 7 morphologies.
 
-![Figure 1.4: 7-Class diagnostic samples from the training dataset](./class_samples.png)
-*Figure 1.4: Representative visual examples for each of the 7 clinical diagnostic classes.*
+![Real HAM10000 examples, one per class](./class_samples_real.png)
+*One real image per class from the HAM10000 test split, each labelled with its
+ISIC id and ground-truth diagnosis so any panel can be traced to its dataset row.
+Regenerate with `python scripts/build_class_samples.py`.*
 
 | Label | Full Name | Description |
 | :--- | :--- | :--- |
@@ -172,9 +171,6 @@ swapping checkpoints fails loudly rather than silently changing the network.
 ## Out-of-Distribution (OOD) Gatekeeper
 
 Three stages guard inference.
-
-![Figure 1.2: OOD Gatekeeper & Decision Logic Flowchart](./logic_flowchart.png)
-*Figure 1.2: Logic flow for Out-of-Distribution detection and final acceptance.*
 
 ### Stage 1: Illumination-invariant image statistics
 

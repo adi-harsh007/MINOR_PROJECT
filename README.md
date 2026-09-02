@@ -1,6 +1,13 @@
 # DermaScan AI 4.0 — Clinical Skin Cancer Diagnostic Studio
 
-DermaScan AI is a clinical-grade skin lesion classification system powered by an **EfficientNet-B3** deep neural network trained on the ISIC/HAM10000 dataset. It provides real-time pathology prediction across 7 skin cancer classes, spatial **Grad-CAM AI Heatmap** activation visualization, Out-of-Distribution (OOD) non-skin rejection, and persistent clinical diagnostic history.
+DermaScan AI is a **research prototype** for skin lesion classification, built on an
+**EfficientNet-B3** network trained on HAM10000. It predicts across 7 lesion classes and
+provides Grad-CAM attribution, out-of-distribution rejection, and a local history of past
+scans.
+
+It is **not a diagnostic device and not a substitute for examination by a qualified
+clinician.** Measured melanoma recall is 0.624 — roughly 38% of melanomas in the held-out
+test set are missed. See [Measured performance](#measured-performance).
 
 ---
 
@@ -8,39 +15,45 @@ DermaScan AI is a clinical-grade skin lesion classification system powered by an
 
 ```text
 MODEL_Skin-Cancer/
-├── backend/                  # FastAPI backend & PyTorch inference
-│   ├── main.py               # App entrypoint, CORS policy & static mounts
-│   ├── config.py             # Paths, upload limits & security configuration
-│   ├── model.py              # Network architectures (plain / multihead)
-│   ├── ml_engine.py          # Predictor: preprocessing, readout & Grad-CAM
-│   ├── ood.py                # Out-of-distribution gate (colour + feature space)
-│   ├── database.py           # SQLAlchemy engine & session management
-│   ├── models.py             # ORM schema for diagnostic records
+├── backend/
+│   ├── main.py                 # App entrypoint, CORS policy, static mounts
+│   ├── config.py               # Paths, upload limits, security configuration
+│   ├── model.py                # Network architectures (plain / multihead)
+│   ├── ml_engine.py            # Predictor: preprocessing, readout, Grad-CAM
+│   ├── ood.py                  # Out-of-distribution gate
+│   ├── database.py             # SQLAlchemy engine and sessions
+│   ├── models.py               # ORM schema (diagnostic_sessions)
 │   └── routers/
-│       └── diagnostics.py    # /api/analyze and history endpoints
-├── frontend/                 # Single-page web application
-│   ├── index.html            # UI layout, viewport & diagnostic views
-│   └── js/app.js             # View router, heatmap renderer & API client
-├── models/                   # Weights & decision thresholds (gitignored)
-│   ├── latest.pt             # EfficientNet-B3 weights (123 MB)
-│   └── class_thresholds.json # Per-class decision thresholds
-├── data/
-│   ├── pathology.db          # SQLite diagnostic history
-│   └── uploads/              # Stored lesion images
+│       └── diagnostics.py      # /api/analyze, history, delete endpoints
+├── frontend/
+│   ├── index.html              # UI layout, viewport, diagnostic views
+│   └── js/
+│       └── app.js              # View router, heatmap renderer, API client
+├── models/                     # gitignored
+│   ├── latest.pt               # EfficientNet-B3 weights (123 MB)
+│   └── class_thresholds.json   # Per-class decision thresholds
+├── data/                       # gitignored
+│   ├── pathology.db            # SQLite diagnostic history
+│   └── uploads/                # Stored lesion images
 ├── docs/
-│   ├── MODEL_DETAILS.md      # Measured performance, thresholds & OOD logic
-│   ├── PROJECT_ARCHITECTURE.md
-│   ├── evaluation_results.json      # Raw measured test-set metrics
-│   └── confusion_matrix_measured.png
-├── samples/                  # Reference dermoscopic images + a non-skin control
+│   ├── MODEL_DETAILS.md        # Measured performance, thresholds, OOD logic
+│   ├── PROJECT_ARCHITECTURE.md # Stack, request flow, API surface
+│   ├── FEATURE_STATUS.md       # What the UI actually implements
+│   ├── evaluation_results.json # Raw measured test-set metrics
+│   ├── confusion_matrix_measured.png
+│   ├── class_samples_real.png  # Real HAM10000 example per class
+│   └── DermaScan_Serving_Audit.pdf
+├── samples/                    # Reference dermoscopic images + a non-skin control
 ├── scripts/
-│   ├── evaluate_model.py     # Measure performance on a labelled hold-out set
-│   ├── optimize_thresholds.py# Fit per-class thresholds to the served config
-│   └── calibrate_ood.py      # Fit the OOD gate to real data
-├── tests/                    # pytest suite (runs against a temp database)
+│   ├── evaluate_model.py       # Measure performance on a labelled hold-out set
+│   ├── optimize_thresholds.py  # Fit thresholds to the served configuration
+│   ├── calibrate_ood.py        # Fit the OOD gate to real data
+│   ├── build_class_samples.py  # Build the class figure from real images
+│   └── build_audit_pdf.py      # Build the audit PDF
+├── tests/                      # pytest suite (runs against a temp database)
 ├── pytest.ini
 ├── requirements.txt
-└── start.py                  # Single-command startup
+└── start.py                    # Single-command startup
 ```
 
 ---
@@ -58,22 +71,15 @@ python start.py
 
 ---
 
-### **Method 2: Starting Backend & Frontend Separately**
+### **Method 2: Running Uvicorn directly**
 
-If you prefer running the API server and web interface in separate terminal windows:
-
-#### **Step 1: Start Backend Server**
 ```bash
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8088 --reload
 ```
-- **Backend API URL**: `http://localhost:8088`
-- **Swagger Docs**: `http://localhost:8088/docs`
 
-#### **Step 2: Start Frontend Web Server**
-```bash
-python -m http.server 8080 --directory frontend
-```
-- **Frontend SPA URL**: `http://localhost:8080`
+The frontend is served by this same process at `/`. It calls the API at the relative
+path `/api`, so it cannot be hosted on a separate port without changing `API_BASE` in
+`frontend/js/app.js` or putting a proxy in front of it.
 
 ---
 
@@ -84,7 +90,9 @@ python -m http.server 8080 --directory frontend
    - Anatomic site metadata (e.g., *Anterior Torso*, *Head/Neck*) is tagged.
 
 2. **API Inference Request**:
-   - Clicking **"Begin AI Analysis"** sends a multipart HTTP `POST` request to `http://localhost:8088/api/analyze` with the image binary and anatomic tag.
+   - Clicking **"Begin AI Analysis"** sends a multipart `POST` to `/api/analyze` with the
+     image binary. A `site` field is also sent, but the backend currently ignores it — the
+     anatomic site is not stored and does not affect inference.
 
 3. **Backend ML Pipeline Execution**:
    - **OOD Gatekeeper**: `backend/ood.py` applies illumination-invariant image statistics (relative contrast, high-frequency ratio, chromatic hue), then a feature-space check once fitted.
@@ -93,58 +101,81 @@ python -m http.server 8080 --directory frontend
    - **Database Log**: SQLAlchemy saves diagnosis details to `data/pathology.db`.
 
 4. **Frontend Response & Visualization**:
-   - The API returns probabilities, risk level (*HIGH*, *MODERATE*, *LOW*), ABCDE clinical findings, and Base64 Grad-CAM heatmap data.
+   - The API returns `session_id`, `prediction`, `confidence`, `threshold`, the seven
+     class `scores`, an `is_high_risk` boolean, and `heatmap_base64` (which is `null` when
+     attribution could not be computed). Risk wording and any ABCDE guidance shown in the
+     UI are produced client-side from the predicted class — they are not API fields.
    - `app.js` updates view to **Diagnostic Results**, draws the Grad-CAM heatmap onto `<canvas id="console-heatmap-canvas">`, and synchronizes zoom/pan transforms.
 
 ---
 
-## 📖 Comprehensive Function & Component Index
+## 📖 Component Index
 
-### 🐍 Backend Python Functions (`backend/`)
+Verified against the source. Anything not listed here does not exist.
 
-#### **`backend/main.py`**
-- `serve_index()`: Serves `frontend/index.html` as the main application SPA entrypoint.
-- `favicon()`: Returns 204 No Content.
-- `lifespan()`: Initializes database tables on startup.
-- `health_check()`: Returns system health status, model architecture details, and version string.
+### Backend (`backend/`)
 
-#### **`backend/ml_engine.py` (`SkinCancerPredictor` Class)**
-- `__init__()`: Builds the architecture named by `MODEL_ARCH`, strictly loads the checkpoint (failure is fatal), loads per-class thresholds, registers Grad-CAM hooks on `conv_head`, and sets up preprocessing (300x300 resize, ImageNet normalization).
-- `_check_ood(image, tensor)`: Runs the OOD stages in `backend/ood.py` - illumination-invariant image statistics, then feature-space Mahalanobis distance when fitted. Returns a rejection with a reason, or `None` to proceed.
-- `generate_gradcam_base64(image, target_class_idx)`: Computes a class activation map from `conv_head` activations and gradients, applies a Jet colormap, and returns a Base64 PNG. Returns `None` if attribution cannot be computed - never a synthetic stand-in.
-- `predict(image)`: Full inference path - OOD gate, forward pass, sigmoid readout, per-class threshold margin rule, and Grad-CAM generation. Temperature scaling is **not** applied: the calibration run measured it as harmful (NLL 1.045 -> 1.173) and the reported metrics use temperature 1.0.
+#### `main.py`
+- `serve_index()` — serves `frontend/index.html`.
+- `favicon()` — returns 204 No Content.
+- `lifespan()` — creates database tables on startup.
+- `health_check()` — returns a static `{status, engine, version}` payload. The engine
+  string is hardcoded and does not reflect the loaded checkpoint.
 
-#### **`backend/routers/diagnostics.py`**
-- `/api/analyze` (`analyze_lesion(file, site, db)`): End-to-end API endpoint that receives lesion scans, calls `predictor.predict()`, records diagnosis entries in SQLite database, and returns clinical JSON payloads + heatmap overlays.
-- `/api/history` (`get_history(limit, db)`): Retrieves past diagnostic scan records sorted by timestamp.
-- `/api/export-pdf/{scan_id}` (`export_pdf(scan_id, db)`): Generates printable clinical PDF reports containing diagnostic summaries, pathology codes, and risk assessments.
+#### `ml_engine.py` — `SkinCancerPredictor`
+- `__init__()` — builds the architecture named by `MODEL_ARCH`, loads the checkpoint
+  strictly (failure is fatal), loads per-class thresholds, registers Grad-CAM hooks on
+  `conv_head`, and sets up preprocessing (300x300 resize, ImageNet normalization).
+- `_check_ood(image, tensor)` — runs the stages in `ood.py`; returns a rejection with a
+  reason, or `None` to proceed.
+- `generate_gradcam_base64(image, target_class_idx)` — gradient-weighted activation map
+  over `conv_head` with a Jet colormap, as a base64 PNG. Returns `None` when attribution
+  cannot be computed; it never substitutes a placeholder.
+- `predict(image)` — OOD gate, forward pass, sigmoid readout, per-class threshold margin
+  rule, Grad-CAM. Temperature scaling is **not** applied: the upstream calibration run
+  measured it as harmful (NLL 1.045 -> 1.173) and the reported metrics use temperature 1.0.
 
-#### **`backend/database.py` & `backend/models.py`**
-- `init_db()`: Creates SQLite database schema defined in `DiagnosticRecord`.
-- `get_db()`: SQLAlchemy database session dependency injector.
-- `DiagnosticRecord`: Database ORM model defining schema fields (`id`, `filename`, `anatomic_site`, `primary_diagnosis`, `pathology_code`, `risk_level`, `confidence`, `probabilities`, `timestamp`).
+#### `ood.py`
+- `compute_metrics(image)` — illumination-invariant statistics (`rel_contrast`,
+  `hf_ratio`, `blue_green`, `chromatic_fraction`).
+- `color_gate(image, thresholds)` — stage 1; returns `is_ood`, `reason`, `detail`, `metrics`.
+- `FeatureSpaceOOD` — stage 2, Mahalanobis distance in the classifier's feature space.
+  Reports itself unavailable until fitted by `scripts/calibrate_ood.py`.
 
----
+#### `model.py`
+- `build_model(arch, num_classes)` — `plain` (timm EfficientNet-B3, single linear head)
+  or `multihead` (two-layer head). The architectures are not interchangeable.
+- `get_conv_head(model)` / `get_pooled_features(model, x)` — architecture-agnostic accessors.
 
-### 🌐 Frontend JavaScript Functions (`frontend/js/app.js`)
+#### `routers/diagnostics.py`
+- `POST /api/analyze` — validates the upload, runs inference, records the session.
+- `GET /api/history` — completed sessions, newest first (`limit` 1–200).
+- `DELETE /api/history/all` and `DELETE /api/history/{id}` — both require `X-Admin-Token`
+  and are disabled (403) while `ADMIN_TOKEN` is unset.
+- `require_admin(x_admin_token)` — the guard for both delete routes.
 
-#### **SPA Routing & State Engine**
-- `navigate(viewId, payload)`: Swaps active view (`view-console`, `view-results`, `view-history`, `view-knowledge`) and executes view initializer functions.
-- `toast(message, type)`: Displays non-intrusive floating toast notifications with severity styling.
+#### `database.py` / `models.py`
+- `init_db()` — creates the schema.
+- `get_db()` — session dependency.
+- `DiagnosticSession` — the only table (`diagnostic_sessions`), with fields
+  `id`, `image_path`, `status`, `prediction`, `confidence`, `threshold_used`,
+  `all_scores`, `is_high_risk`, `created_at`, `completed_at`.
 
-#### **Diagnostic Analysis & Viewport Engine**
-- `runAnalysis()`: Captures lesion scan binary and anatomic site, triggers `/api/analyze` request, handles loading animations, and updates results view.
-- `renderGradCamHeatmap(base64Data)`: Renders AI-generated Base64 activation map onto `<canvas id="console-heatmap-canvas">` or draws fallback thermal gradient.
-- `toggleGradCamHeatmap()`: Toggles state and visibility of Grad-CAM overlay canvas with button style highlights.
-- `updateViewportTransform()`: Applies CSS `scale()` and `translate()` properties synchronously to both `#console-viewport-img` and `#console-heatmap-canvas`.
-- `zoomIn()` / `zoomOut()` / `resetViewportTransform()`: Handles zoom and pan viewport controls.
-- `updateCalibrationFilters()` / `resetCalibration()`: Adjusts brightness, contrast, and saturation CSS filters on the lesion scan in real time.
-- `handleFileSelected(file)`: Validates image drop/upload, creates object preview URLs, and updates console UI state.
-
-#### **Results & History Management**
-- `renderResultsView(result)`: Renders primary pathology prognosis, confidence gauges, risk tags, probability distribution bars, and ABCDE diagnostic breakdown.
-- `fetchHistory()` / `renderHistoryTable(historyData)`: Fetches diagnostic scan logs from `/api/history` and populates the clinical history data table.
-- `downloadClinicalReport()`: Formats and initiates print/PDF export for clinical documentation.
+### Frontend (`frontend/js/app.js`)
+- `navigate(viewId, payload)` — swaps between `view-console`, `view-results`,
+  `view-compare`, `view-analytics` and `view-knowledge`.
+- `toast(message, type)` — floating notifications; creates its own container.
+- `runAnalysis()` — submits the scan and routes to the results view. If the selected
+  image cannot be fetched it raises rather than substituting anything.
+- `renderGradCamHeatmap(base64Data)` — draws the attribution map onto
+  `#console-heatmap-canvas`. With no data the canvas stays empty.
+- `toggleGradCamHeatmap()`, `updateViewportTransform()`, `zoomIn()`, `zoomOut()`,
+  `resetViewportTransform()` — viewport controls.
+- `updateCalibrationFilters()` / `resetCalibration()` — brightness, contrast and
+  saturation CSS filters. Display only; they do not affect what is sent for inference.
+- `handleFileSelected(file)`, `renderResultsView(result)`, `renderHistoryTable(logs)`.
+- `downloadClinicalReport()` — client-side export via html2pdf, falling back to
+  `window.print()`. There is no server-side PDF endpoint.
 
 ---
 
@@ -161,6 +192,11 @@ The model classifies cutaneous lesions across **7 clinical categories**:
 | **BKL** | Benign Keratosis (Seborrheic Keratosis) | **LOW** (Benign) |
 | **DF** | Dermatofibroma | **LOW** (Benign) |
 | **VASC** | Vascular Lesions | **LOW** (Benign) |
+
+The API exposes a single `is_high_risk` boolean, which is true for `mel`, `bcc` and
+`akiec`. It groups the pre-malignant class with the malignant ones, so it is a triage
+hint rather than clinical staging. The three-level wording above is presentation only
+and is applied in the frontend.
 
 ### Measured performance
 
@@ -182,4 +218,16 @@ To reproduce on a labelled hold-out set:
 python scripts/evaluate_model.py --data-dir path/to/test_set
 ```
 
-For per-class metrics and model details, see **[docs/MODEL_DETAILS.md](docs/MODEL_DETAILS.md)**.
+## Documentation
+
+- **[docs/MODEL_DETAILS.md](docs/MODEL_DETAILS.md)** — measured per-class metrics, the
+  confusion matrix, threshold operating point, and the OOD gate.
+- **[docs/PROJECT_ARCHITECTURE.md](docs/PROJECT_ARCHITECTURE.md)** — stack, request flow,
+  API surface, configuration.
+- **[docs/FEATURE_STATUS.md](docs/FEATURE_STATUS.md)** — what the UI implements, what it
+  does not, and known issues.
+- **[docs/DermaScan_Serving_Audit.pdf](docs/DermaScan_Serving_Audit.pdf)** — printable
+  audit report.
+
+Every figure in these documents is measured. Reproduce them with
+`scripts/evaluate_model.py` and `scripts/build_class_samples.py`.

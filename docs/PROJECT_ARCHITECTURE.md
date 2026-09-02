@@ -1,74 +1,132 @@
-# DermaScan AI — Full Project Architecture
+# DermaScan AI — Project Architecture
 
-This document provides a comprehensive overview of the DermaScan AI project, detailing the tech stack, system architecture, and integration between components.
+How the pieces fit together: tech stack, request flow, and the API surface.
+Every statement here is checked against the code; where behaviour is not
+implemented, this document says so rather than describing an intention.
 
-![Figure 2.1: Primary technologies utilized in the DermaScan AI architecture](./tech_stack.png)
-*Figure 2.1: Primary technologies utilized in the DermaScan AI architecture.*
+## Technology Stack
 
-## 🛠️ Technology Stack
+### Backend
+- **[FastAPI](https://fastapi.tiangolo.com/)** — HTTP API and static file serving.
+- **[Uvicorn](https://www.uvicorn.org/)** — ASGI server. Launched by `start.py`.
+- **[SQLite](https://www.sqlite.org/)** — single-file database at `data/pathology.db`.
+- **[SQLAlchemy](https://www.sqlalchemy.org/)** — ORM; one table, `diagnostic_sessions`.
 
-### Backend (Python Core)
-- **Framework:** [FastAPI](https://fastapi.tiangolo.com/) — Modern, high-performance web framework for building APIs.
-- **Server:** [Uvicorn](https://www.uvicorn.org/) — ASGI server for production deployment.
-- **Database:** [SQLite](https://www.sqlite.org/) — Lightweight, file-based relational database (`data/pathology.db`).
-- **ORM:** [SQLAlchemy](https://www.sqlalchemy.org/) — Data persistence and relational mapping.
+### Machine learning
+- **[PyTorch](https://pytorch.org/)** (>= 2.6) — inference only. No training code lives
+  in this repository; the model is trained separately and the checkpoint is copied in.
+- **[timm](https://github.com/huggingface/pytorch-image-models)** — supplies the
+  EfficientNet-B3 backbone.
+- **[Torchvision](https://pytorch.org/vision/stable/index.html)** — resize and
+  normalize. No centre crop: the model is fed a plain 300x300 resize, matching how
+  it was trained and evaluated.
+- **[Pillow](https://python-pillow.org/)** and **[NumPy](https://numpy.org/)** —
+  image decoding and the out-of-distribution statistics in `backend/ood.py`.
 
-### Machine Learning (The "Brain")
-- **Framework:** [PyTorch](https://pytorch.org/) — Core deep learning engine.
-- **Model Library:** [TIMM (PyTorch Image Models)](https://github.com/huggingface/pytorch-image-models) — Provides the EfficientNet-B3 architecture.
-- **Image Processing:** [PIL (Pillow)](https://python-pillow.org/) & [NumPy](https://numpy.org/) for loading and OOD color analysis.
-- **Vision Transforms:** [Torchvision](https://pytorch.org/vision/stable/index.html) for resizing, cropping, and normalization.
+### Frontend
+- **Single-page application**, vanilla ES6 JavaScript. No build step, no framework.
+- **[Tailwind CSS](https://tailwindcss.com/)** via CDN, and
+  **[Material Symbols](https://fonts.google.com/icons)** for icons.
+- **[html2pdf.js](https://github.com/eKoopmans/html2pdf.js)** via CDN for the
+  client-side report export, falling back to `window.print()` when it fails to load.
+- Dark theme, served from `frontend/index.html` and `frontend/js/app.js`.
 
-### Frontend (User Interface)
-- **Architecture:** Single Page Application (SPA).
-- **Core:** Vanilla JavaScript (ES6) — Lightweight interactivity without heavy framework overhead.
-- **Styling:** [Tailwind CSS](https://tailwindcss.com/) — Utility-first styling for a premium, responsive UI.
-- **Iconography:** [Material Symbols](https://fonts.google.com/icons) — Modern clinical-style icons.
-- **Theming:** Custom "Clinical Obsidian" dark mode with glassmorphism and animated scan effects.
-
----
-
-## 🏗️ System Architecture
-
-### 1. Unified Directory Structure
-The project is organized into modular components to ensure portability:
-- `backend/`: API routes, database models, and ML inference class.
-- `frontend/`: Static assets (`index.html` and `js/app.js`).
-- `models/`: Weights (`latest.pt`) and serialized thresholds.
-- `data/`: Relational data (`pathology.db`) and uploaded clinical images.
-- `tests/`: Automated scripts for validating model reliability.
-
-### 2. The Data Pipeline
-The system follows a sequential data flow from user interaction to persistent storage:
-
-![Figure 2.2: End-to-End Data Flow of DermaScan AI](./data_flow.png)
-*Figure 2.2: End-to-End Data Flow from UI through the Backend and ML layers.*
-
-1.  **Ingestion:** User uploads a dermoscopic image through the dashboard.
-2.  **OOD Inspection:** The `ml_engine.py` runs an HSV-based color check to reject non-skin images (e.g., clothes, medical background).
-3.  **Inference:** Valid skin images are passed to the EfficientNet-B3 model.
-4.  **Thresholding:** Raw logits are passed through a Sigmoid layer and compared against **optimized thresholds** for the 7 classes.
-5.  **Persistence:** The diagnosis, confidence, and timestamp are saved to the SQLite `History` table.
-6.  **Response:** The structured JSON response is rendered by the frontend dashboard.
+The frontend is served by the same FastAPI process and calls the API at the
+relative path `/api`. It therefore cannot be hosted separately without changing
+`API_BASE` in `app.js` or adding a proxy.
 
 ---
 
-## 🔌 API & Integration
+## Directory Layout
 
-### Main Endpoints
-- `POST /api/analyze`: Primary endpoint for multiclass inference and OOD gating.
-- `GET /api/history`: Retrieves the archive of previous diagnostic sessions.
-- `DELETE /api/history/all`: Per-request or bulk deletion of clinical history.
-- `GET /api/health`: Monitors engine status and model version.
-
-### Communication
-The frontend communicates via the native `fetch` API, sending `FormData` for image uploads and receiving structured JSON for results.
+- `backend/` — API routes, ORM models, and inference.
+  - `model.py` — the two network architectures; selected by `MODEL_ARCH`.
+  - `ml_engine.py` — preprocessing, readout, decision rule, Grad-CAM.
+  - `ood.py` — out-of-distribution gate.
+- `frontend/` — `index.html` and `js/app.js`.
+- `models/` — `latest.pt` and `class_thresholds.json` (gitignored; not in the repo).
+- `data/` — `pathology.db` and uploaded images.
+- `scripts/` — evaluation, threshold fitting, OOD calibration, figure builders.
+- `tests/` — pytest suite; runs against a temporary database, never `data/pathology.db`.
 
 ---
 
-## 🏃 Operation & Deployment
-The project is designed for local clinical execution. The unified entry point is `start.py`, which initializes the database, validates model weights, and launches the Uvicorn server on port `8088`.
+## Request Flow
 
-*Related Documentation:*
-- [Model Details & Performance](./MODEL_DETAILS.md)
-- [Main README](../README.md)
+1. **Upload.** The browser POSTs `multipart/form-data` to `/api/analyze`. It also
+   sends a `site` field (anatomic site) which the **backend currently ignores** —
+   it is neither stored nor used in inference.
+2. **Validation.** The extension is checked against an allowlist, the body against
+   a 10 MB cap, and the image is validated by decoding it. The client-supplied
+   `content_type` is not trusted.
+3. **OOD gate** (`backend/ood.py`). Illumination-invariant image statistics reject
+   flat colour fields, pixel noise, and non-skin hues. A feature-space Mahalanobis
+   stage exists but is **inactive until fitted** by `scripts/calibrate_ood.py`.
+   Rejections return HTTP 422 with a machine-readable reason.
+4. **Inference.** Resize to 300x300, ImageNet normalization, forward pass through
+   EfficientNet-B3, sigmoid readout.
+5. **Decision.** `argmax(probability - class threshold)` using the per-class
+   thresholds in `models/class_thresholds.json`. A negative best margin is rejected
+   as `low_confidence`.
+6. **Attribution.** Grad-CAM over `conv_head`, returned as a base64 PNG. If it
+   cannot be computed the API returns `null` — never a placeholder image.
+7. **Persistence.** A `diagnostic_sessions` row is written with the prediction,
+   confidence, threshold used, all seven scores, and a high-risk flag.
+8. **Response.** JSON is rendered by the SPA, which draws the heatmap on a canvas
+   overlaying the lesion image.
+
+Rejected scans are not persisted, and their uploaded file is deleted.
+
+---
+
+## API
+
+| Method | Path | Notes |
+| :--- | :--- | :--- |
+| `POST` | `/api/analyze` | Inference and OOD gating. Returns `session_id`, `prediction`, `confidence`, `threshold`, `scores`, `is_high_risk`, `heatmap_base64`. |
+| `GET` | `/api/history` | Completed sessions, newest first. `limit` is bounded to 1–200. |
+| `DELETE` | `/api/history/all` | Deletes every session and its image. **Requires `X-Admin-Token`.** |
+| `DELETE` | `/api/history/{id}` | Deletes one session. **Requires `X-Admin-Token`.** |
+| `GET` | `/api/health` | Static status, engine name, and version string. |
+
+Both `DELETE` endpoints return 403 when `ADMIN_TOKEN` is unset, which is the
+default — they are disabled unless deliberately enabled.
+
+There is no server-side PDF export endpoint. Report export is client-side only.
+
+`is_high_risk` is true for `mel`, `bcc`, and `akiec`. Note this groups `akiec`
+(pre-malignant) with the malignant classes; the flag is a triage hint, not a
+clinical staging.
+
+---
+
+## Configuration
+
+Set via environment or `.env`:
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `MODEL_PATH` | `models/latest.pt` | Served checkpoint. |
+| `MODEL_ARCH` | `plain` | `plain` or `multihead`. Must match the checkpoint; loading is strict. |
+| `IMG_SIZE` | `300` | Inference resolution. Must match training. |
+| `THRESHOLD_PATH` | `models/class_thresholds.json` | Per-class decision thresholds. |
+| `DATABASE_URL` | SQLite in `data/` | Database connection. |
+| `CORS_ORIGINS` | localhost only | Allowed browser origins. |
+| `ADMIN_TOKEN` | unset | Enables the delete endpoints. |
+| `MAX_UPLOAD_BYTES` | `10485760` | Upload size cap. |
+
+---
+
+## Operation
+
+`start.py` launches Uvicorn on port 8088 as a subprocess. It does **not**
+initialise the database or validate the model itself — the database schema is
+created by the FastAPI lifespan handler on startup, and the model is loaded
+lazily on the first `/api/analyze` request. A missing or mismatched checkpoint
+therefore surfaces as a 500 on that first request, not at launch.
+
+Nothing in this system is encrypted or anonymised. Uploaded images are written to
+`data/uploads/` in the clear and retained indefinitely; the database is a plain
+SQLite file. There is no authentication on inference or history reads.
+
+*Related:* [Model details and measured performance](./MODEL_DETAILS.md) · [README](../README.md)
