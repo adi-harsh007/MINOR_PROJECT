@@ -174,6 +174,9 @@ Verified against the source. Anything not listed here does not exist.
 - `updateCalibrationFilters()` / `resetCalibration()` — brightness, contrast and
   saturation CSS filters. Display only; they do not affect what is sent for inference.
 - `handleFileSelected(file)`, `renderResultsView(result)`, `renderHistoryTable(logs)`.
+- `deleteHistoryRecord(id)` — deletes one session, sending the `X-Admin-Token` header.
+  The token is prompted for once and stored in `localStorage`; `getStoredAdminToken()`,
+  `setStoredAdminToken()` and `requestAdminToken()` manage it.
 - `downloadClinicalReport()` — client-side export via html2pdf, falling back to
   `window.print()`. There is no server-side PDF endpoint.
 

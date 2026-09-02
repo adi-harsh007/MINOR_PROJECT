@@ -123,6 +123,26 @@ def test_delete_rejects_wrong_token(client):
 
 
 @pytest.mark.slow
+def test_single_delete_works_with_token(client, lesion, admin_headers):
+    """The history UI deletes one record at a time and must succeed with a token."""
+    session_id = upload(client, "lesion.jpg", lesion).json()["session_id"]
+    assert client.delete(f"/api/history/{session_id}").status_code == 401
+    r = client.delete(f"/api/history/{session_id}", headers=admin_headers)
+    assert r.status_code == 200
+    assert client.get("/api/history").json() == []
+
+
+def test_delete_disabled_when_no_token_configured(client, monkeypatch):
+    """With ADMIN_TOKEN unset the endpoint reports 'disabled', not 'wrong token'."""
+    import backend.routers.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "ADMIN_TOKEN", None)
+    r = client.delete("/api/history/1", headers={"X-Admin-Token": "anything"})
+    assert r.status_code == 403
+    assert "disabled" in r.json()["detail"].lower()
+
+
+@pytest.mark.slow
 def test_delete_all_with_token_removes_rows_and_files(client, lesion, admin_headers):
     upload(client, "lesion.jpg", lesion)
     assert len(client.get("/api/history").json()) == 1

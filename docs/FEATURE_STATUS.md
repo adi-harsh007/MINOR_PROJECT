@@ -24,6 +24,7 @@ planned work in the present tense and listed capabilities that were never built.
 | CSV export | history view | Client-side download of the history table. |
 | PDF report export | `downloadClinicalReport()` | Client-side via html2pdf, falling back to `window.print()`. There is no server-side PDF endpoint. |
 | Toast notifications | `toast()` | Creates its own container; `index.html` does not define one. |
+| Delete a history record | `deleteHistoryRecord()` | Sends `X-Admin-Token`. The token is requested once and kept in this browser's `localStorage`; a rejected token is discarded so the next attempt re-asks. |
 
 ## Not implemented
 
@@ -40,10 +41,8 @@ These appeared in the previous roadmap. None of them exist in the code:
 
 ## Known issues
 
-- **History deletion returns 401 from the UI.** `app.js` calls
-  `DELETE /api/history/{id}`, which now requires an `X-Admin-Token` header that the
-  frontend does not send. The delete control will fail until either the frontend
-  sends the token or the endpoint is reworked for the local single-user case.
+- **Deleting requires `ADMIN_TOKEN` to be set server-side.** With it unset the API
+  returns 403 and the UI reports deletion as disabled, which is the default state.
 - **Anatomic site is collected but discarded.** The UI implies it is part of the
   record; it is not persisted.
 - **`/api/health` is static.** It reports a hardcoded engine name and version rather

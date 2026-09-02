@@ -121,11 +121,15 @@ async function apiCall(endpoint, options = {}) {
                     errorMsg = detail.message;
                 }
             } catch (_) {}
-            throw new Error(errorMsg);
+            const error = new Error(errorMsg);
+            error.status = response.status;
+            throw error;
         }
         return await response.json();
     } catch (err) {
-        throw new Error(err.message || "Failed to communicate with DermaScan AI server.");
+        const error = new Error(err.message || "Failed to communicate with DermaScan AI server.");
+        error.status = err.status;
+        throw error;
     }
 }
 
@@ -706,15 +710,64 @@ function renderHistoryTable(records) {
     }).join('');
 }
 
+
+// ─── Admin Token (required by the destructive endpoints) ─────────────────────
+const ADMIN_TOKEN_KEY = "dermascan.adminToken";
+
+function getStoredAdminToken() {
+    try {
+        return window.localStorage.getItem(ADMIN_TOKEN_KEY) || "";
+    } catch (_) {
+        return "";   // private mode / storage blocked
+    }
+}
+
+function setStoredAdminToken(value) {
+    try {
+        if (value) window.localStorage.setItem(ADMIN_TOKEN_KEY, value);
+        else window.localStorage.removeItem(ADMIN_TOKEN_KEY);
+    } catch (_) { /* non-fatal: the token simply won't persist */ }
+}
+
+function requestAdminToken() {
+    const existing = getStoredAdminToken();
+    if (existing) return existing;
+    const entered = window.prompt(
+        "Deleting a record requires the admin token.\n\n" +
+        "This is the ADMIN_TOKEN value set in the server's .env file. " +
+        "It is stored in this browser only."
+    );
+    const token = (entered || "").trim();
+    if (token) setStoredAdminToken(token);
+    return token;
+}
+
 async function deleteHistoryRecord(id) {
     if (!confirm(`Are you sure you want to delete scan log #${id}?`)) return;
 
+    const token = requestAdminToken();
+    if (!token) {
+        toast("Delete cancelled: no admin token provided.", "warning");
+        return;
+    }
+
     try {
-        await apiCall(`/history/${id}`, { method: "DELETE" });
+        await apiCall(`/history/${id}`, {
+            method: "DELETE",
+            headers: { "X-Admin-Token": token }
+        });
         toast(`Scan log #${id} deleted.`, "success");
         loadAnalyticsData();
     } catch (err) {
-        toast(err.message, "error");
+        if (err.status === 401) {
+            // Wrong token: forget it so the next attempt asks again.
+            setStoredAdminToken("");
+            toast("Admin token rejected. Check ADMIN_TOKEN and try again.", "error");
+        } else if (err.status === 403) {
+            toast("Deletion is disabled: the server has no ADMIN_TOKEN configured.", "warning");
+        } else {
+            toast(err.message, "error");
+        }
     }
 }
 
@@ -725,7 +778,7 @@ function exportHistoryCSV() {
         return;
     }
 
-    const headers = ["ID", "Timestamp", "Prediction", "Pathology_Name", "Confidence", "Is_High_Risk", "Anatomic_Site"];
+    const headers = ["ID", "Timestamp", "Prediction", "Pathology_Name", "Confidence", "Is_High_Risk"];
     const rows = state.history.map(item => {
         const meta = PATHOLOGY_META[item.prediction] || { name: item.prediction };
         return [
@@ -734,8 +787,7 @@ function exportHistoryCSV() {
             `"${item.prediction}"`,
             `"${meta.name}"`,
             (item.confidence * 100).toFixed(2) + "%",
-            item.is_high_risk ? "Yes" : "No",
-            `"${item.anatomic_site || 'N/A'}"`
+            item.is_high_risk ? "Yes" : "No"
         ].join(",");
     });
 
