@@ -51,6 +51,7 @@ MODEL_Skin-Cancer/
 │   ├── build_class_samples.py  # Build the class figure from real images
 │   └── build_audit_pdf.py      # Build the audit PDF
 ├── tests/                      # pytest suite (runs against a temp database)
+├── LICENSE                     # MIT (code) + third-party data terms
 ├── pytest.ini
 ├── requirements.txt
 └── start.py                    # Single-command startup
@@ -302,3 +303,26 @@ python scripts/evaluate_model.py --data-dir path/to/test_set
 
 Every figure in these documents is measured. Reproduce them with
 `scripts/evaluate_model.py` and `scripts/build_class_samples.py`.
+
+---
+
+## ⚖️ Licence
+
+Source code is MIT licensed — see [LICENSE](LICENSE).
+
+The dermoscopic images in `samples/` and `docs/class_samples_real.png` are **not**
+covered by MIT. They come from the **HAM10000** dataset, which is distributed under a
+Creative Commons **NonCommercial** licence: redistribution is permitted with attribution
+for non-commercial use only. The trained weights are derived from that dataset and
+inherit the same restriction.
+
+> Tschandl, P., Rosendahl, C. & Kittler, H. *The HAM10000 dataset, a large collection of
+> multi-source dermatoscopic images of common pigmented skin lesions.* Sci. Data 5,
+> 180161 (2018). <https://doi.org/10.1038/sdata.2018.161>
+
+`samples/cat.jpg` has unknown provenance and should be replaced with an image of known
+licence before public redistribution.
+
+**This is a research prototype, not a medical device.** It has not been clinically
+validated. Measured melanoma recall is 0.624 — a confident output is not evidence of a
+benign lesion. See the disclaimer in [LICENSE](LICENSE).
