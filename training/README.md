@@ -144,14 +144,111 @@ than the deployed model — and the threshold step then gave it away.
 Run 2 also compares against the deployed model and refuses to recommend export on
 a regression.
 
+### Run 2 — 3 September 2026, Tesla T4, 30 epochs. Rejected; results uninterpretable.
+
+Training completed cleanly and looked healthy — best epoch 24 at **val accuracy
+0.8109, macro-F1 0.6772, melanoma recall 0.6706**, no early stop, ~85s/epoch.
+Everything measured *after* training is unusable, and the run diagnosed three
+more defects.
+
+| | val, epoch 24 | test, same kernel |
+| :--- | ---: | ---: |
+| Accuracy | 0.8109 | 0.0532 |
+| Macro-F1 | 0.6772 | 0.0518 |
+| Melanoma recall | 0.6706 | 0.0059 |
+
+Test arg-max accuracy 0.0532 is *below* the 0.143 that uniform guessing gives,
+and 0.0532 × 1503 ≈ 79 = the exact support of `bcc`: the evaluated model was
+emitting one near-constant class. Thresholds cannot cause that — arg-max ignores
+them — and val and test use the same `eval_tf` and the same loaders, so the fault
+is the weights, not the data.
+
+**What went wrong, and what changed:**
+
+5. **The restored checkpoint was never verified.** `model.load_state_dict(
+   torch.load(BEST_PATH))` is the only thing between the 0.81 val number and the
+   0.05 test number. `/kaggle/working` is repopulated from the previous version
+   when a notebook is re-opened, so `_best_weights.pt` from run 1 — the run that
+   collapsed to val accuracy 0.08 — was sitting there to be loaded.
+   *Fix:* checkpoints are named and stamped with `RUN_ID`, the restore asserts
+   the id matches, `model` is rebuilt from scratch, and val macro-F1 is
+   re-measured and compared against the logged value. Drift over 0.01 raises.
+   A second guard in the test cell raises if arg-max accuracy is below chance.
+
+6. **The melanoma floor made the threshold search degenerate.** Encoded as
+   `if recall < floor: return -1`, the objective is *flat* at −1 across every
+   infeasible threshold vector, so coordinate ascent had no direction to move in
+   and returned its own start point. The recovery path then maximised
+   `mel_recall + 0.001·macro_f1`, whose global optimum is "predict melanoma for
+   every image": calib recall 1.0000, macro-F1 0.0300, **97.5% of test cases
+   flagged for review**. A model that flags everything has said nothing.
+   *Fix:* a linear penalty (`macro_f1 − 5·deficit`) that is feasibility-seeking
+   where the floor is violated and plain macro-F1 where it is met, from three
+   starts. On a synthetic replica this reaches macro-F1 0.7716 at melanoma
+   recall 0.7182, against 0.6987/0.5727 for arg-max.
+
+7. **The exported temperature and thresholds were never valid together.** They
+   were fitted alternately and the *last* iteration's leftovers were shipped:
+   thresholds fitted under the previous temperature, paired with a temperature
+   fitted under the previous thresholds. On the synthetic replica the
+   temperature oscillated 1.0 → 6.0 → 0.5 and the exported pair scored 0.699 /
+   0.573 while a consistent pair from the same data reached 0.781 / 0.700.
+   *Fix:* every `(T, thresholds)` pair is scored as a pair, the loop stops when
+   the temperature starts cycling, and the best *jointly evaluated* pair wins.
+
+Two smaller ones: the AMP/scheduler warning was real — `scaler.step()` skips the
+update when gradients overflow while `scheduler.step()` advanced regardless, so
+the schedule ran ahead of the updates; and the `head`/`backbone` learning-rate
+split matched the name fragment `"head"`, which swept efficientnet's `conv_head`
+(a backbone block) into the head group at 10× its intended rate.
+
+### The incumbent comparison was not a fair fight
+
+`docs/evaluation_results.json` reports accuracy 0.8505 / macro-F1 0.7450 over
+n=1525 with **no lesion-disjoint splitting**. HAM10000 holds ~10015 images of
+~7470 lesions, so an image-level split routinely puts two photographs of the same
+lesion on opposite sides of the train/test line, and the published number is
+optimistic by an unknown margin. Every number this notebook produces is
+lesion-disjoint. Gating an honest model on an optimistic one is not a decision
+procedure, so the deploy decision is now an **absolute release gate**
+(`CFG["release_gate"]`: macro-F1 ≥ 0.70, melanoma recall ≥ 0.70, melanoma
+surfaced ≥ 0.90, review rate ≤ 0.45, ECE ≤ 0.10). The published numbers are still
+printed, labelled as not comparable. To settle it properly, upload
+`models/latest.pt` as a Kaggle dataset: the fair-comparison cell re-measures the
+incumbent on this split at arg-max.
+
+### Recipe changes for run 3
+
+Run 2 plateaued at val macro-F1 0.677 by epoch 16 while train loss kept falling
+to 0.27 — overfitting, with a backbone at `lr` 3e-5 that was barely moving.
+
+| | run 2 | run 3 |
+| :--- | ---: | ---: |
+| `lr_backbone` / `lr_head` | 3e-5 / 3e-4 | 1e-4 / 5e-4 |
+| Mixup | — | α 0.2, p 0.5 |
+| Weight EMA | — | decay 0.9995 (evaluated and exported) |
+| `drop_rate` | 0.4 | 0.3 |
+| `sampler_power` | 0.5 | 0.6 |
+| Epochs | 30 | 35 |
+
+Mixup pays for the higher learning rates and improves calibration, which matters
+directly because the thresholds are fitted on probabilities. The EMA is what gets
+checkpointed and exported: run 2's melanoma recall swung between 0.59 and 0.82 on
+consecutive epochs, which makes checkpoint selection a lottery. Selection is
+macro-F1 with a linear penalty below the melanoma floor, rather than macro-F1
+alone — a hard floor would throw away good epochs over 170 validation melanomas'
+worth of noise.
+
 ## Status
 
-Logic validated locally without a GPU: splits were generated against the real
-HAM10000 metadata (zero lesion leakage, all seven classes in all four splits),
-and the loss, metrics, threshold fitting, calibration and export functions were
-executed against synthetic tensors on CPU — including a `weights_only=True`
-round-trip and a check that the melanoma-recall floor actually binds.
+Every cell of the notebook has been **executed end to end on CPU** against a
+synthetic HAM10000 stand-in (829 images, 630 lesions, learnable class colour):
+training loop with mixup and EMA, checkpoint, restore verification (drift
+0.0000), calibration, test evaluation, the release gate, export, and the
+`weights_only=True` CPU reload. The threshold search was separately validated on
+synthetic logits calibrated to start *below* the melanoma floor, which is the
+case that made run 2 degenerate.
 
-**The corrected recipe has not itself been run on a GPU.** Run 1's numbers are
-real; run 2's are not yet. Treat the next Kaggle run as the test of these fixes,
-and compare it against the incumbent table the notebook now prints.
+**The recipe has not been run on a GPU.** Run 1 and run 2's training numbers are
+real; nothing measured after training in run 2 is. Treat the next Kaggle run as
+the test of these fixes.
