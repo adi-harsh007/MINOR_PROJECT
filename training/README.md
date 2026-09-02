@@ -239,16 +239,69 @@ macro-F1 with a linear penalty below the melanoma floor, rather than macro-F1
 alone — a hard floor would throw away good epochs over 170 validation melanomas'
 worth of noise.
 
+### Run 3 — 3 September 2026, Tesla T4, 31 of 35 epochs (early stop). **Passed.**
+
+Best epoch 21, restored and verified (`drift 0.0000` — the guard from run 2 does
+what it was built to do). Measured on the lesion-disjoint test split, n=1503:
+
+| | required | measured | |
+| :--- | ---: | ---: | :--- |
+| Macro-F1 | ≥ 0.70 | **0.7224** | pass |
+| Melanoma recall | ≥ 0.70 | **0.8176** | pass |
+| Melanoma surfaced | ≥ 0.90 | **0.9588** | pass |
+| Review rate | ≤ 0.45 | **0.3781** | pass |
+| ECE | ≤ 0.10 | **0.0404** | pass |
+
+Accuracy is 0.8290 at arg-max and 0.7951 under the served threshold rule; the
+3.4-point difference buys melanoma recall 0.6588 → 0.8176, which is the trade
+this system exists to make. Brightness spread 0.0233 across ×1.0–×0.35
+(acceptable). Exported: `T=1.35`, melanoma alert `p(mel) ≥ 0.05`, fingerprint
+`9b08a89ec541b6c8`.
+
+Against run 2, on validation: macro-F1 0.6772 → 0.7120, accuracy 0.8109 →
+0.8318. Early stopping fired at epoch 31 with the best at 21, so 35 epochs is
+about right and the recipe is no longer the binding constraint.
+
+Per-class F1 on test: `nv` 0.892, `vasc` 0.878, `bcc` 0.758, `df` 0.723, `bkl`
+0.619, `akiec` 0.610, `mel` 0.577. Melanoma precision is 0.4455 by design — the
+threshold rule deliberately over-calls melanoma — and `bkl` recall (0.5443) is
+now the weakest link, mostly lost to `nv` and `mel`.
+
+### The incumbent comparison cannot be repaired
+
+Run 3 ran the fair-comparison cell with `models/latest.pt` uploaded, and the
+result invalidates the comparison rather than settling it:
+
+| arg-max, this split | incumbent | run 3 |
+| :--- | ---: | ---: |
+| Accuracy | 0.9534 | 0.8290 |
+| Macro-F1 | 0.9288 | 0.7226 |
+| Melanoma recall | 0.8000 | 0.6588 |
+
+The incumbent's own checkpoint records held-out accuracy **0.8637**, and the repo
+publishes 0.8505. A model does not score *better* on a stricter split than on its
+own held-out data. The explanation is that this split is drawn fresh from all
+10015 images while the incumbent was trained on an unrecorded split of the same
+corpus — so roughly 85% of what is called "test" here was in that model's
+training set, and the table above measures memorisation. Solving
+`0.9534 = seen + (1-seen)·0.8637` gives ~66% seen at perfect recall, or ~85% at
+the ~0.98 a fitted model typically scores on its own training data.
+
+This cannot be fixed without the incumbent's original split manifest, which was
+never recorded. **The candidate must be judged on the release gate** — absolute
+criteria on data it has never seen — and the incumbent's numbers treated as
+unverifiable. The cell now detects this case and says so instead of printing a
+table that looks authoritative.
+
 ## Status
 
-Every cell of the notebook has been **executed end to end on CPU** against a
-synthetic HAM10000 stand-in (829 images, 630 lesions, learnable class colour):
-training loop with mixup and EMA, checkpoint, restore verification (drift
-0.0000), calibration, test evaluation, the release gate, export, and the
-`weights_only=True` CPU reload. The threshold search was separately validated on
-synthetic logits calibrated to start *below* the melanoma floor, which is the
-case that made run 2 degenerate.
+Run 3 passed the release gate and is the first artefact from this notebook that
+is safe to deploy. Every cell was also executed end to end on CPU against a
+synthetic HAM10000 stand-in before the run, and the threshold search validated on
+synthetic logits starting *below* the melanoma floor — the case that made run 2
+degenerate.
 
-**The recipe has not been run on a GPU.** Run 1 and run 2's training numbers are
-real; nothing measured after training in run 2 is. Treat the next Kaggle run as
-the test of these fixes.
+What is still unmeasured: performance on skin tones outside HAM10000's
+distribution (the brightness sweep is a crude proxy, not a substitute for a
+Fitzpatrick-labelled set such as DDI), and any comparison against the deployed
+model that is not contaminated.
