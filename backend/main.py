@@ -1,47 +1,61 @@
+import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import uvicorn
 
+from .config import CORS_ORIGINS, FRONTEND_DIR, SAMPLES_DIR
 from .database import init_db
 from .routers import diagnostics
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    print("Database initialized.")
+    yield
+
 
 app = FastAPI(
     title="DermaScan AI — Diagnostic Engine",
     description="EfficientNet-B3 skin cancer classification API",
     version="3.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
 app.include_router(diagnostics.router)
 
-# Serve frontend
-app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
+# Serve frontend and the reference lesion images (paths are absolute so the
+# server can be started from any working directory).
+app.mount("/js", StaticFiles(directory=os.path.join(FRONTEND_DIR, "js")), name="js")
+app.mount("/samples", StaticFiles(directory=SAMPLES_DIR), name="samples")
+
 
 @app.get("/")
 def serve_index():
-    return FileResponse("frontend/index.html")
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    return FileResponse("frontend/index.html") # Or just return 204 No Content
+    return Response(status_code=204)
 
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    print("Database initialized.")
 
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "engine": "EfficientNet-B3", "version": "3.0.0"}
+
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8088, reload=True)
