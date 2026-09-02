@@ -1,0 +1,137 @@
+"""Upload validation, admin guards, and history behaviour."""
+
+import io
+import os
+
+import numpy as np
+import pytest
+from PIL import Image
+
+
+def jpeg_bytes(img):
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def upload(client, name, data, content_type="image/jpeg"):
+    return client.post("/api/analyze", files={"file": (name, data, content_type)})
+
+
+@pytest.fixture(scope="session")
+def lesion(project_root):
+    return jpeg_bytes(Image.open(os.path.join(project_root, "samples", "ISIC_0024307.jpg")))
+
+
+# ── service ──────────────────────────────────────────────────────────────
+
+def test_health(client):
+    assert client.get("/api/health").json()["status"] == "ok"
+
+
+def test_index_and_samples_are_served(client):
+    assert client.get("/").status_code == 200
+    assert client.get("/samples/nv.jpg").status_code == 200
+
+
+def test_favicon_is_no_content(client):
+    """Previously returned index.html as image/x-icon."""
+    assert client.get("/favicon.ico").status_code == 204
+
+
+# ── upload validation ────────────────────────────────────────────────────
+
+def test_rejects_disallowed_extension(client):
+    r = upload(client, "payload.py", b"print(1)")
+    assert r.status_code == 400
+
+
+def test_rejects_traversal_style_filename(client, lesion):
+    """The client-supplied name must never reach the filesystem path."""
+    r = upload(client, "../../evil.jpg/x.php", lesion)
+    assert r.status_code == 400
+
+
+def test_rejects_non_image_with_image_extension(client):
+    """content_type is client-controlled, so validation decodes the bytes."""
+    r = upload(client, "fake.jpg", b"not an image at all")
+    assert r.status_code == 400
+
+
+def test_rejects_oversized_upload(client):
+    from backend.config import MAX_UPLOAD_BYTES
+
+    r = upload(client, "big.jpg", b"\0" * (MAX_UPLOAD_BYTES + 1))
+    assert r.status_code == 413
+
+
+# ── inference ────────────────────────────────────────────────────────────
+
+@pytest.mark.slow
+def test_accepts_real_lesion_and_records_it(client, lesion):
+    r = upload(client, "lesion.jpg", lesion)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["prediction"] in ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+    assert 0.0 <= body["confidence"] <= 1.0
+    assert set(body["scores"]) == {"akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"}
+
+    history = client.get("/api/history").json()
+    assert len(history) == 1
+    assert history[0]["prediction"] == body["prediction"]
+
+
+@pytest.mark.slow
+def test_heatmap_is_absent_or_real_never_synthetic(client, lesion):
+    """A heatmap is either genuine model attribution or absent - never a stand-in."""
+    body = upload(client, "lesion.jpg", lesion).json()
+    hm = body.get("heatmap_base64")
+    assert hm is None or hm.startswith("data:image/png;base64,")
+
+
+@pytest.mark.slow
+def test_ood_rejection_reports_a_reason(client):
+    flat = jpeg_bytes(Image.new("RGB", (300, 300), (240, 240, 238)))
+    r = upload(client, "wall.jpg", flat)
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["reason"] == "uniform_field"
+    assert detail["message"]
+
+
+@pytest.mark.slow
+def test_rejected_scan_is_not_persisted(client):
+    noise = jpeg_bytes(Image.fromarray(
+        np.random.randint(0, 255, (300, 300, 3), dtype=np.uint8)))
+    assert upload(client, "noise.jpg", noise).status_code == 422
+    assert client.get("/api/history").json() == []
+
+
+# ── admin guard ──────────────────────────────────────────────────────────
+
+def test_delete_all_requires_token(client):
+    assert client.delete("/api/history/all").status_code == 401
+
+
+def test_delete_one_requires_token(client):
+    assert client.delete("/api/history/1").status_code == 401
+
+
+def test_delete_rejects_wrong_token(client):
+    r = client.delete("/api/history/all", headers={"X-Admin-Token": "wrong"})
+    assert r.status_code == 401
+
+
+@pytest.mark.slow
+def test_delete_all_with_token_removes_rows_and_files(client, lesion, admin_headers):
+    upload(client, "lesion.jpg", lesion)
+    assert len(client.get("/api/history").json()) == 1
+
+    r = client.delete("/api/history/all", headers=admin_headers)
+    assert r.status_code == 200
+    assert client.get("/api/history").json() == []
+
+
+def test_history_limit_is_bounded(client):
+    assert client.get("/api/history?limit=0").status_code == 422
+    assert client.get("/api/history?limit=500").status_code == 422

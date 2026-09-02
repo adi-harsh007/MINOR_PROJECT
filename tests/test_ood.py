@@ -1,58 +1,88 @@
-import requests, os
-from PIL import Image
+"""Out-of-distribution gate.
+
+The regression these lock down: the previous gate keyed on absolute channel
+standard deviation, which scales with image brightness, so identical lesions were
+accepted or rejected purely on how dark the image was.
+"""
+
+import os
+
 import numpy as np
+import pytest
+from PIL import Image, ImageEnhance
 
-API = "http://localhost:8088/api/analyze"
-# Project Paths
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPLOADS_DIR = os.path.join(BASE_DIR, "data", "uploads")
+from backend.ood import color_gate, compute_metrics
 
-results = []
 
-def test(path, label):
-    try:
-        with open(path, 'rb') as f:
-            res = requests.post(API, files={'file': (os.path.basename(path), f, 'image/jpeg')})
-            if res.status_code == 422:
-                results.append(f"REJECTED  {label}")
-            else:
-                d = res.json()
-                results.append(f"ACCEPTED  {label}  -> {d.get('prediction')} ({d.get('confidence',0):.3f})")
-    except Exception as e:
-        results.append(f"FAILED    {label}  -> {str(e)}")
+@pytest.fixture(scope="module")
+def lesion(project_root):
+    return Image.open(os.path.join(project_root, "samples", "ISIC_0024307.jpg")).convert("RGB")
 
-# Generate OOD images (Temporary in local tests folder)
-Image.new('RGB', (300,300), (100,160,230)).save("t1.jpg")    # blue sky
-np_green = np.full((300,300,3), [34,120,50], dtype=np.uint8)
-Image.fromarray(np_green).save("t2.jpg")                     # green forest
-gray = np.random.randint(100,200,(300,300), dtype=np.uint8)
-Image.fromarray(np.stack([gray]*3, axis=-1)).save("t3.jpg")   # grayscale
-Image.new('RGB', (300,300), (220,40,40)).save("t4.jpg")       # red object
 
-# Test OOD images
-test("t1.jpg", "Blue Sky")
-test("t2.jpg", "Green Forest") 
-test("t3.jpg", "Grayscale")
-test("t4.jpg", "Red Object")
+def accepted(img):
+    return not color_gate(img)["is_ood"]
 
-# Test REAL skin images from data/uploads
-if os.path.exists(UPLOADS_DIR):
-    for f in os.listdir(UPLOADS_DIR):
-        if f.endswith((".jpg", ".jpeg", ".png")):
-            img_path = os.path.join(UPLOADS_DIR, f)
-            try:
-                # Check if it's not a completely flat/corrupt image natively first to label it
-                std = np.array(Image.open(img_path).resize((128,128))).astype(float).std(axis=(0,1)).mean()
-                label = f"Real Skin ({f[:8]}) [std={std:.1f}]"
-                test(img_path, label)
-            except Exception:
-                pass
 
-# Cleanup synthetic images
-for f in ["t1.jpg","t2.jpg","t3.jpg","t4.jpg"]:
-    if os.path.exists(f): os.remove(f)
+def reason(img):
+    return color_gate(img)["reason"]
 
-results_path = os.path.join(BASE_DIR, "tests", "ood_results.txt")
-with open(results_path, "w") as f:
-    f.write("\n".join(results))
-print(f"Done. Results written to {results_path}")
+
+# ── the bias regression ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("factor", [1.0, 0.75, 0.5, 0.35, 0.25, 0.15])
+def test_accepts_lesion_at_any_brightness(lesion, factor):
+    """Darkening must not change the verdict. The old gate rejected 0.35 and below."""
+    assert accepted(ImageEnhance.Brightness(lesion).enhance(factor))
+
+
+def test_metrics_are_illumination_invariant(lesion):
+    full = compute_metrics(lesion)
+    dark = compute_metrics(ImageEnhance.Brightness(lesion).enhance(0.35))
+    assert dark["rel_contrast"] == pytest.approx(full["rel_contrast"], abs=0.02)
+    assert dark["hf_ratio"] == pytest.approx(full["hf_ratio"], abs=0.02)
+
+
+def test_accepts_grayscale_dermoscopy(lesion):
+    """Grayscale input was previously rejected outright."""
+    assert accepted(lesion.convert("L").convert("RGB"))
+
+
+def test_accepts_high_contrast_lesion(lesion):
+    """A dark lesion on pale skin tripped the old avg_std upper bound."""
+    assert accepted(ImageEnhance.Contrast(lesion).enhance(1.8))
+
+
+# ── genuine rejections ───────────────────────────────────────────────────
+
+def test_rejects_uniform_field():
+    assert reason(Image.new("RGB", (300, 300), (240, 240, 238))) == "uniform_field"
+
+
+def test_rejects_saturated_flat_colour():
+    assert reason(Image.new("RGB", (300, 300), (220, 40, 40))) == "uniform_field"
+
+
+def test_rejects_pixel_noise():
+    noise = Image.fromarray(np.random.randint(0, 255, (300, 300, 3), dtype=np.uint8))
+    assert reason(noise) == "pixel_noise"
+
+
+def test_rejects_grayscale_noise():
+    g = np.random.randint(100, 200, (300, 300), dtype=np.uint8)
+    assert reason(Image.fromarray(np.stack([g] * 3, axis=-1))) == "pixel_noise"
+
+
+def test_rejection_carries_human_readable_detail():
+    result = color_gate(Image.new("RGB", (300, 300), (240, 240, 238)))
+    assert result["detail"] and result["detail"][0].isupper()
+
+
+# ── documented limitation ────────────────────────────────────────────────
+
+def test_feature_stage_is_inactive_until_fitted():
+    """Semantic OOD needs the fitted Mahalanobis stage; it reports itself unavailable."""
+    from backend.ood import FeatureSpaceOOD
+
+    detector = FeatureSpaceOOD(stats_path="does-not-exist.npz")
+    assert detector.available is False
+    assert detector.check(np.zeros(8)) is None
