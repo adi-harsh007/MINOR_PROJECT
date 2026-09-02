@@ -74,6 +74,7 @@ async def analyze_lesion(
             "threshold": result["threshold"],
             "scores": result["scores"],
             "is_high_risk": session.is_high_risk,
+            "heatmap_base64": result.get("heatmap_base64", ""),
         }
     except HTTPException:
         raise

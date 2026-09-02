@@ -1,39 +1,4 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.env
-.env.example
-
-# Models & Data
-models/*.pt
-# models/*.json  <-- Keep thresholds in git as they define logic
-data/pathology.db
-data/uploads/*
-!data/uploads/.gitkeep
-
-# Logs & Temporary
-*.log
-verify_output.txt
-env_debug.txt
-
-# IDE & OS
-.vscode/
-.idea/
-.gemini/
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Environments
-.env
-.venv
-env/
-venv/
-node_modules/
-
-# Python artifacts
+# Python & Bytecode
 __pycache__/
 *.py[cod]
 *$py.class
@@ -41,3 +6,46 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Environments & Dependencies
+.env
+.venv
+env/
+venv/
+ENV/
+node_modules/
+
+# Models & Heavy Binaries
+models/*.pt
+models/*.bin
+models/*.onnx
+models/*.h5
+models/*.ckpt
+
+# Clinical Data & Databases
+*.db
+*.sqlite3
+data/*.db
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Temporary Files & Logs
+*.log
+verify_output.txt
+env_debug.txt
+*.tmp
+
+# IDE & OS Artifacts
+.vscode/
+.idea/
+.gemini/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# Archives & Export Bundles
+*.zip
+*.tar.gz
+*.7z
