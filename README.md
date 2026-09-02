@@ -43,7 +43,7 @@ MODEL_Skin-Cancer/
 │   ├── confusion_matrix_measured.png
 │   ├── class_samples_real.png  # Real HAM10000 example per class
 │   └── DermaScan_Serving_Audit.pdf
-├── samples/                    # Reference dermoscopic images + a non-skin control
+├── samples/                    # 21 labelled test images (3/class) + a non-skin control
 ├── scripts/
 │   ├── evaluate_model.py       # Measure performance on a labelled hold-out set
 │   ├── optimize_thresholds.py  # Fit thresholds to the served configuration
@@ -182,6 +182,64 @@ Verified against the source. Anything not listed here does not exist.
   `setStoredAdminToken()` and `requestAdminToken()` manage it.
 - `downloadClinicalReport()` — client-side export via html2pdf, falling back to
   `window.print()`. There is no server-side PDF endpoint.
+
+---
+
+## 🔬 Test Samples
+
+`samples/` holds **21 labelled dermoscopic images**, three per diagnostic class, for
+exercising the classifier without hunting for data.
+
+| Code | Diagnosis | Risk | Files | Example |
+| :--- | :--- | :--- | ---: | :--- |
+| `akiec` | Actinic keratosis / intraepithelial carcinoma | Pre-malignant | 3 | `akiec_1_ISIC_0024450.jpg` |
+| `bcc` | Basal cell carcinoma | Malignant | 3 | `bcc_1_ISIC_0024332.jpg` |
+| `bkl` | Benign keratosis | Benign | 3 | `bkl_1_ISIC_0024336.jpg` |
+| `df` | Dermatofibroma | Benign | 3 | `df_1_ISIC_0024386.jpg` |
+| `mel` | Melanoma | Malignant | 3 | `mel_1_ISIC_0024310.jpg` |
+| `nv` | Melanocytic nevus | Benign | 3 | `nv_1_ISIC_0024307.jpg` |
+| `vasc` | Vascular lesion | Benign | 3 | `vasc_1_ISIC_0024669.jpg` |
+
+Naming is `<class>_<n>_<ISIC id>.jpg`, so the ground truth is visible in the filename and
+every image traces back to its dataset row. All filenames were verified against the split
+manifest.
+
+Two properties make these usable as an honest test:
+
+- **They come from the held-out test split.** The model never trained on them, so results
+  reflect real generalisation rather than memorisation.
+- **They were selected by manifest order, not by what the model gets right.** A sample set
+  curated on model success would look better than the model is.
+
+`cat.jpg` is a non-skin control: it should be **rejected** by the OOD gate, not classified.
+(`nv.jpg` and `ISIC_0024307.jpg` are earlier reference images retained because the sample
+gallery links to them.)
+
+### Current behaviour on these samples
+
+Snapshot with the shipped configuration — **17 of 21 correct**, matching the 0.8505
+accuracy measured across the full test split:
+
+| Ground truth | Correct | Notes |
+| :--- | :--- | :--- |
+| `akiec`, `bkl`, `nv`, `vasc` | 3/3 each | |
+| `bcc` | 2/3 | one read as `bkl` |
+| `df` | 2/3 | one read as `nv` |
+| `mel` | **1/3 by prediction, 2/3 surfaced** | the melanoma alert channel catches one the argmax misses |
+
+The melanoma row is the one that matters, and it is why the alert channel exists. Before
+temperature scaling the two missed melanomas were called benign nevus at 0.969 and 0.984
+confidence — confidently wrong, not uncertain.
+
+Regenerate or resize the set at any time:
+
+```bash
+python scripts/build_test_samples.py --per-class 5
+```
+
+It replaces the class-prefixed files and leaves the controls alone. Full manifest and the
+per-file breakdown: [samples/README.md](samples/README.md). These images are from HAM10000
+and carry that dataset's licence (6 MB in-repo).
 
 ---
 

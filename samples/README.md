@@ -57,28 +57,33 @@ ISIC id identifies the exact dataset row.
 
 ## What to expect
 
-Snapshot taken 2 September 2026 with the shipped configuration (`models/latest.pt`,
-300x300, sigmoid readout, per-class thresholds). **17 of 21 correct** — in line with the
-0.8505 accuracy measured over the full test split.
+Snapshot with the shipped configuration (`models/latest.pt`, 300x300, sigmoid readout,
+temperature 2.0, melanoma alert at p(mel) >= 0.45). **17 of 21 correct** — in line with
+the 0.8505 accuracy measured over the full test split.
 
-| Ground truth | Correct | Notes |
-| :--- | :--- | :--- |
-| `akiec` | 3/3 | |
-| `bcc` | 2/3 | one read as `bkl` |
-| `bkl` | 3/3 | |
-| `df` | 2/3 | one read as `nv` |
-| `mel` | **1/3** | two read as `nv` at 0.969 and 0.984 confidence |
-| `nv` | 3/3 | |
-| `vasc` | 3/3 | |
+| Ground truth | Correct | Melanoma alerts | Notes |
+| :--- | :--- | ---: | :--- |
+| `akiec` | 3/3 | 1 | |
+| `bcc` | 2/3 | 0 | one read as `bkl` |
+| `bkl` | 3/3 | 0 | |
+| `df` | 2/3 | 1 | one read as `nv` |
+| `mel` | **1/3** | **2** | the alert channel surfaces one the prediction misses |
+| `nv` | 3/3 | 0 | |
+| `vasc` | 3/3 | 0 | |
 
-The melanoma column is the one that matters. Two of three melanomas were missed, and
-both were called benign nevus with very high confidence — the model is **confidently
-wrong**, not uncertain, so a low confidence score cannot be used as a safety signal.
-This matches the measured melanoma recall of 0.624 across the full test set.
+The melanoma row is the one that matters. Only one of three is named correctly, but the
+alert channel raises **two of three** for review — which is the point of having it.
+Across the full test split the alert surfaces 89.9% of melanomas at a 30.5% review rate.
 
-`cat.jpg` should be rejected outright rather than classified. Note that until the
-feature-space OOD stage is fitted (`scripts/calibrate_ood.py`), the colour gate alone
-may accept some non-clinical photographs.
+Confidences now peak around 0.90 rather than 0.98. Before temperature scaling the two
+missed melanomas were reported as benign nevus at 0.969 and 0.984 — confidently wrong
+rather than uncertain. Calibration reduces the overstatement; it does not make the
+prediction right, so **a high confidence score is still not a safety signal.**
+
+`cat.jpg` should be rejected outright rather than classified. Until the feature-space OOD
+stage is fitted (`scripts/calibrate_ood.py`), the colour gate alone may accept some
+non-clinical photographs.
+
 
 ## Regenerating
 
