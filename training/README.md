@@ -52,10 +52,13 @@ overlap before training starts.
 alert cutoff are all fitted on a separate calibration split. Nothing is tuned
 against the test numbers.
 
-**Melanoma is weighted explicitly.** Measured recall was 0.624, with misses
-reported as benign. The loss applies inverse-frequency weights plus an extra
-`mel_loss_weight` multiplier, and melanoma recall is logged every epoch so a run
-that trades it away for overall accuracy is visible while it happens.
+**Melanoma is weighted explicitly, and class balancing is applied once.**
+Measured recall was 0.624, with misses reported as benign. Frequency is handled
+by the sampler alone (`sampler_power`, square-root by default); loss weights are
+uniform apart from the `mel_loss_weight` multiplier on melanoma. Doing both — a
+balanced sampler *and* inverse-frequency loss weights — is a double correction
+that collapsed run 1. Melanoma recall is logged every epoch, and
+`min_mel_recall` prevents the threshold step from trading it away afterwards.
 
 **Brightness augmentation, then a brightness check.** The deployed model changed
 its answer when an image was darkened, which biases against darker skin and poor
@@ -98,11 +101,57 @@ information. If melanoma recall is still short after retraining, the remaining
 levers are more melanoma data, higher input resolution, or a dedicated
 melanoma-versus-nevus head — not more threshold tuning.
 
+## Run history
+
+### Run 1 — 2 September 2026, Tesla T4, 30 epochs. Rejected.
+
+Completed end to end and produced a model **worse than the deployed one on every
+axis**. Nothing was exported; the run is kept because it diagnosed four real
+defects in this notebook.
+
+| | deployed | run 1 |
+| :--- | ---: | ---: |
+| Accuracy | 0.8505 | 0.7552 |
+| Macro-F1 | 0.7450 | 0.6416 |
+| Melanoma recall | 0.6236 | 0.5706 |
+| ECE | 0.0511 | 0.2367 |
+
+Notably, validation melanoma recall reached **0.76–0.78 at arg-max** — better
+than the deployed model — and the threshold step then gave it away.
+
+**What went wrong, and what changed:**
+
+1. **Double class balancing.** A fully class-balanced sampler was combined with
+   inverse-frequency loss weights, an effective ~1/freq² correction. Validation
+   accuracy was 0.08 at epoch 1, when predicting only `nv` scores 0.68.
+   *Fix:* `sampler_power` (0.5, square-root balancing) and uniform class weights.
+
+2. **The melanoma multiplier did nothing.** Applied after normalisation, melanoma
+   landed at 0.66 — below `akiec` (0.89) and `df` (2.92), so the class it was
+   meant to prioritise ranked fifth of seven.
+   *Fix:* weights are uniform; only melanoma is boosted.
+
+3. **Temperature and ECE measured on different decision paths.** Temperature was
+   fitted on `argmax` while ECE was reported on thresholded predictions, so calib
+   ECE 0.037 and test ECE 0.237 were never comparable.
+   *Fix:* both fitted on the served decision rule, alternating until they settle.
+
+4. **Threshold fitting traded melanoma away.** Maximising macro-F1 alone pushed
+   the melanoma threshold to 0.75 and cut recall from 0.76 to 0.57.
+   *Fix:* `min_mel_recall` is a hard constraint, with an explicit warning when it
+   cannot be met rather than a silent fallback.
+
+Run 2 also compares against the deployed model and refuses to recommend export on
+a regression.
+
 ## Status
 
-The notebook's logic was validated locally: split generation was run against the
-real HAM10000 metadata (zero lesion leakage, all seven classes present in all
-four splits), and the loss, metrics, calibration and export functions were
-executed against synthetic tensors on CPU, including a `weights_only=True`
-round-trip. **The full training run has not been executed** — no GPU was
-available — so treat the first Kaggle run as the real test.
+Logic validated locally without a GPU: splits were generated against the real
+HAM10000 metadata (zero lesion leakage, all seven classes in all four splits),
+and the loss, metrics, threshold fitting, calibration and export functions were
+executed against synthetic tensors on CPU — including a `weights_only=True`
+round-trip and a check that the melanoma-recall floor actually binds.
+
+**The corrected recipe has not itself been run on a GPU.** Run 1's numbers are
+real; run 2's are not yet. Treat the next Kaggle run as the test of these fixes,
+and compare it against the incumbent table the notebook now prints.
