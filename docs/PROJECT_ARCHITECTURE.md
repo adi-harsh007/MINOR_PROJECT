@@ -2,7 +2,7 @@
 
 This document provides a comprehensive overview of the DermaScan AI project, detailing the tech stack, system architecture, and integration between components.
 
-![Figure 2.1: Primary technologies utilized in the DermaScan AI architecture](file:///d:/ML/MODEL_Skin-Cancer/docs/tech_stack.png)
+![Figure 2.1: Primary technologies utilized in the DermaScan AI architecture](./tech_stack.png)
 *Figure 2.1: Primary technologies utilized in the DermaScan AI architecture.*
 
 ## 🛠️ Technology Stack
@@ -41,7 +41,7 @@ The project is organized into modular components to ensure portability:
 ### 2. The Data Pipeline
 The system follows a sequential data flow from user interaction to persistent storage:
 
-![Figure 2.2: End-to-End Data Flow of DermaScan AI](file:///d:/ML/MODEL_Skin-Cancer/docs/data_flow.png)
+![Figure 2.2: End-to-End Data Flow of DermaScan AI](./data_flow.png)
 *Figure 2.2: End-to-End Data Flow from UI through the Backend and ML layers.*
 
 1.  **Ingestion:** User uploads a dermoscopic image through the dashboard.
@@ -70,5 +70,5 @@ The frontend communicates via the native `fetch` API, sending `FormData` for ima
 The project is designed for local clinical execution. The unified entry point is `start.py`, which initializes the database, validates model weights, and launches the Uvicorn server on port `8088`.
 
 *Related Documentation:*
-- [Model Details & Performance](file:///d:/ML/MODEL_Skin-Cancer/docs/MODEL_DETAILS.md)
-- [Main README](file:///d:/ML/MODEL_Skin-Cancer/README.md)
+- [Model Details & Performance](./MODEL_DETAILS.md)
+- [Main README](../README.md)

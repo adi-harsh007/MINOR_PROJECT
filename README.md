@@ -8,32 +8,39 @@ DermaScan AI is a clinical-grade skin lesion classification system powered by an
 
 ```text
 MODEL_Skin-Cancer/
-├── backend/                  # FastAPI REST Backend & PyTorch ML Engine
-│   ├── main.py               # FastAPI application entrypoint & static file mounts
-│   ├── ml_engine.py          # PyTorch EfficientNet-B3 predictor & Grad-CAM hook engine
-│   ├── database.py           # SQLAlchemy SQLite connection & session manager
-│   ├── models.py             # Database ORM schema for clinical records
-│   ├── config.py             # Directory paths & environment configuration
+├── backend/                  # FastAPI backend & PyTorch inference
+│   ├── main.py               # App entrypoint, CORS policy & static mounts
+│   ├── config.py             # Paths, upload limits & security configuration
+│   ├── model.py              # Network architectures (plain / multihead)
+│   ├── ml_engine.py          # Predictor: preprocessing, readout & Grad-CAM
+│   ├── ood.py                # Out-of-distribution gate (colour + feature space)
+│   ├── database.py           # SQLAlchemy engine & session management
+│   ├── models.py             # ORM schema for diagnostic records
 │   └── routers/
-│       └── diagnostics.py    # Diagnostic analysis, history & report export endpoints
-├── frontend/                 # Single-Page Web Application (SPA)
-│   ├── index.html            # Core UI layout, viewport canvas & diagnostic views
-│   └── js/
-│       └── app.js            # SPA view router, canvas heatmap renderer & API handler
-├── models/                   # Neural Network Models & Thresholds
-│   ├── latest.pt             # EfficientNet-B3 PyTorch model weights (129 MB)
-│   └── class_thresholds.json # Optimized per-class decision thresholds
-├── data/                     # Data Persistence & Image Uploads
-│   ├── pathology.db          # SQLite clinical history database
-│   └── uploads/              # Diagnostic lesion image storage
-├── docs/                     # Technical Documentation & Performance Graphs
-│   ├── MODEL_DETAILS.md      # Architecture metrics, confusion matrices & OOD logic
-│   └── PROJECT_ARCHITECTURE.md# System architecture breakdown
-├── samples/                  # Representative test images (ISIC/HAM10000)
-├── scripts/                  # Model evaluation scripts
-├── tests/                    # Out-of-Distribution test scripts
-├── requirements.txt          # Python dependencies
-└── start.py                  # Unified single-command startup script
+│       └── diagnostics.py    # /api/analyze and history endpoints
+├── frontend/                 # Single-page web application
+│   ├── index.html            # UI layout, viewport & diagnostic views
+│   └── js/app.js             # View router, heatmap renderer & API client
+├── models/                   # Weights & decision thresholds (gitignored)
+│   ├── latest.pt             # EfficientNet-B3 weights (123 MB)
+│   └── class_thresholds.json # Per-class decision thresholds
+├── data/
+│   ├── pathology.db          # SQLite diagnostic history
+│   └── uploads/              # Stored lesion images
+├── docs/
+│   ├── MODEL_DETAILS.md      # Measured performance, thresholds & OOD logic
+│   ├── PROJECT_ARCHITECTURE.md
+│   ├── evaluation_results.json      # Raw measured test-set metrics
+│   └── confusion_matrix_measured.png
+├── samples/                  # Reference dermoscopic images + a non-skin control
+├── scripts/
+│   ├── evaluate_model.py     # Measure performance on a labelled hold-out set
+│   ├── optimize_thresholds.py# Fit per-class thresholds to the served config
+│   └── calibrate_ood.py      # Fit the OOD gate to real data
+├── tests/                    # pytest suite (runs against a temp database)
+├── pytest.ini
+├── requirements.txt
+└── start.py                  # Single-command startup
 ```
 
 ---
@@ -80,8 +87,8 @@ python -m http.server 8080 --directory frontend
    - Clicking **"Begin AI Analysis"** sends a multipart HTTP `POST` request to `http://localhost:8088/api/analyze` with the image binary and anatomic tag.
 
 3. **Backend ML Pipeline Execution**:
-   - **OOD Gatekeeper**: `SkinCancerPredictor.is_out_of_distribution()` checks color histograms (HSV hue variance, saturation levels) to filter non-skin images.
-   - **EfficientNet-B3 Pass**: Image is resized to 224x224 and normalized. Forward pass computes logits for 7 pathology classes (MEL, NV, BCC, AKIEC, BKL, DF, VASC).
+   - **OOD Gatekeeper**: `backend/ood.py` applies illumination-invariant image statistics (relative contrast, high-frequency ratio, chromatic hue), then a feature-space check once fitted.
+   - **EfficientNet-B3 Pass**: Image is resized to 300x300 (matching training) and normalized. Forward pass computes logits for 7 pathology classes (MEL, NV, BCC, AKIEC, BKL, DF, VASC).
    - **Grad-CAM Activation Engine**: Backward pass on `conv_head` layer computes gradient-weighted feature maps, rendering a Jet colormap (Blue -> Red) heatmap.
    - **Database Log**: SQLAlchemy saves diagnosis details to `data/pathology.db`.
 
@@ -97,15 +104,15 @@ python -m http.server 8080 --directory frontend
 
 #### **`backend/main.py`**
 - `serve_index()`: Serves `frontend/index.html` as the main application SPA entrypoint.
-- `favicon()`: Handles favicon requests with index/fallback.
-- `on_startup()`: Initializes SQLite database tables on server start.
+- `favicon()`: Returns 204 No Content.
+- `lifespan()`: Initializes database tables on startup.
 - `health_check()`: Returns system health status, model architecture details, and version string.
 
 #### **`backend/ml_engine.py` (`SkinCancerPredictor` Class)**
-- `__init__()`: Loads PyTorch model weights (`models/latest.pt`), decision thresholds (`models/class_thresholds.json`), registers PyTorch hooks on `conv_head`, and initializes ImageNet normalization pipelines.
-- `is_out_of_distribution(image_bytes)`: Dual-layer OOD analyzer evaluating HSV color space histograms (saturation, value, hue variance) to reject non-lesion/non-skin images.
-- `generate_gradcam_base64(image_bytes, target_class_idx)`: Calculates class activation maps using feature maps and gradients from `conv_head`, applies a Jet colormap, and returns a Base64-encoded PNG image.
-- `predict(image_bytes)`: Complete inference workflow including OOD check, forward pass, temperature-scaled confidence normalization, per-class thresholding, risk stratification, and Grad-CAM map generation.
+- `__init__()`: Builds the architecture named by `MODEL_ARCH`, strictly loads the checkpoint (failure is fatal), loads per-class thresholds, registers Grad-CAM hooks on `conv_head`, and sets up preprocessing (300x300 resize, ImageNet normalization).
+- `_check_ood(image, tensor)`: Runs the OOD stages in `backend/ood.py` - illumination-invariant image statistics, then feature-space Mahalanobis distance when fitted. Returns a rejection with a reason, or `None` to proceed.
+- `generate_gradcam_base64(image, target_class_idx)`: Computes a class activation map from `conv_head` activations and gradients, applies a Jet colormap, and returns a Base64 PNG. Returns `None` if attribution cannot be computed - never a synthetic stand-in.
+- `predict(image)`: Full inference path - OOD gate, forward pass, sigmoid readout, per-class threshold margin rule, and Grad-CAM generation. Temperature scaling is **not** applied: the calibration run measured it as harmful (NLL 1.045 -> 1.173) and the reported metrics use temperature 1.0.
 
 #### **`backend/routers/diagnostics.py`**
 - `/api/analyze` (`analyze_lesion(file, site, db)`): End-to-end API endpoint that receives lesion scans, calls `predictor.predict()`, records diagnosis entries in SQLite database, and returns clinical JSON payloads + heatmap overlays.
@@ -155,4 +162,24 @@ The model classifies cutaneous lesions across **7 clinical categories**:
 | **DF** | Dermatofibroma | **LOW** (Benign) |
 | **VASC** | Vascular Lesions | **LOW** (Benign) |
 
-For complete performance metrics, confusion matrices, and ROC curves, see **[docs/MODEL_DETAILS.md](file:///d:/ML/MODEL_Skin-Cancer/docs/MODEL_DETAILS.md)**.
+### Measured performance
+
+Measured on the full held-out HAM10000 test split (1525 images) with the served
+configuration — `models/latest.pt` at 300x300, sigmoid readout, per-class
+thresholds:
+
+- **Accuracy:** 0.8505   **Macro-F1:** 0.7450
+- **Melanoma recall: 0.624** — roughly 38% of melanomas are missed, most
+  of them misread as benign nevi.
+
+Melanoma recall is the limiting factor and the dominant clinical risk. This
+system is a research prototype and is **not a substitute for examination by a
+qualified clinician.**
+
+To reproduce on a labelled hold-out set:
+
+```bash
+python scripts/evaluate_model.py --data-dir path/to/test_set
+```
+
+For per-class metrics and model details, see **[docs/MODEL_DETAILS.md](docs/MODEL_DETAILS.md)**.

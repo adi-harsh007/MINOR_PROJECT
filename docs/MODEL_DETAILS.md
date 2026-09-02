@@ -6,7 +6,7 @@ This document provides technical specifications and performance metrics for the 
 
 Before specialized neural analysis, clinicians often use the **ABCDE criteria** for the visual assessment of pigmented lesions, particularly for identifying potential melanoma.
 
-![Figure 1.1: ABCDE rules for visual clinical diagnosis of Melanoma](file:///d:/ML/MODEL_Skin-Cancer/docs/abcde_rules.png)
+![Figure 1.1: ABCDE rules for visual clinical diagnosis of Melanoma](./abcde_rules.png)
 *Figure 1.1: Traditional ABCDE rules for visual clinical diagnosis of Melanoma.*
 
 | Rule | Aspect | Description |
@@ -20,15 +20,15 @@ Before specialized neural analysis, clinicians often use the **ABCDE criteria** 
 ## Model Architecture
 
 - **Base Model:** EfficientNet-B3 (via `timm` library)
-- **Input Resolution:** 224x224 pixels
+- **Input Resolution:** 300x300 pixels
 - **State:** Evaluation Mode (`eval()`) with pre-trained weights loaded from `models/latest.pt`.
 
 ## Data Processing & Preprocessing
 
 The model uses a standardized ImageNet-based preprocessing pipeline:
-1. **Resize:** Input images are resized to 256 pixels on the shorter side.
-2. **Center Crop:** A 224x224 patch is cropped from the center.
-3. **Normalization:**
+1. **Resize:** Input images are resized directly to 300x300 (no centre crop),
+   matching `img_size: 300` and `get_val_transforms` in the training repository.
+2. **Normalization:**
    - Mean: `[0.485, 0.456, 0.406]`
    - Std Dev: `[0.229, 0.224, 0.225]`
 
@@ -36,7 +36,7 @@ The model uses a standardized ImageNet-based preprocessing pipeline:
 
 The model is trained on the HAM10000 dataset to recognize the following 7 morphologies.
 
-![Figure 1.4: 7-Class diagnostic samples from the training dataset](file:///d:/ML/MODEL_Skin-Cancer/docs/class_samples.png)
+![Figure 1.4: 7-Class diagnostic samples from the training dataset](./class_samples.png)
 *Figure 1.4: Representative visual examples for each of the 7 clinical diagnostic classes.*
 
 | Label | Full Name | Description |
@@ -53,65 +53,188 @@ The model is trained on the HAM10000 dataset to recognize the following 7 morpho
 
 Metrics are based on optimized classification thresholds to maximize the Macro F1-Score.
 
-### Baseline vs. Optimized Performance
+### Threshold-optimization run (calibration split, n=997)
 - **Baseline F1 (Macro):** 0.7272
 - **Optimized F1 (Macro):** 0.7288
 
-### Confusion Matrix (7x7)
+These are calibration-set figures recorded in `models/class_thresholds.json` when
+the thresholds were fitted. They are **not** test-set performance; see below.
 
-The following heatmap was programmatically generated from the model's performance metadata, illustrating the normalized relationship between True Positives and False Positives.
+### Measured Test-Set Performance
 
-![Figure 1.3: Automated 7x7 Confusion Matrix](file:///d:/ML/MODEL_Skin-Cancer/docs/confusion_matrix_automated.png)
-*Figure 1.3: Automated confusion matrix showing normalized diagnostic accuracy across 7 classes.*
+Measured by running the served checkpoint over the full held-out HAM10000 test
+split (1525 images) — not reconstructed from summary statistics.
 
-### Training & Convergence Analytics
+- **Served model:** `models/latest.pt` (plain timm EfficientNet-B3, `MODEL_ARCH=plain`)
+- **Preprocessing:** `Resize(300, 300)`, no centre crop — matches `img_size: 300`
+  in the training config
+- **Readout:** sigmoid, decision rule `argmax(probability - class threshold)`
+- **Accuracy:** 0.8505  **Macro-F1:** 0.7450
 
-The following charts demonstrate the model's learning progress and stabilization across the training session.
+| Class | Support | Precision | Recall | F1 |
+| :--- | ---: | ---: | ---: | ---: |
+| **akiec** | 71 | 0.8276 | 0.6761 | 0.7442 |
+| **bcc** | 73 | 0.7742 | 0.6575 | 0.7111 |
+| **bkl** | 169 | 0.7407 | 0.7101 | 0.7251 |
+| **df** | 12 | 0.4667 | 0.5833 | 0.5185 |
+| **mel** | 178 | 0.6491 | 0.6236 | 0.6361 |
+| **nv** | 999 | 0.9093 | 0.9429 | 0.9258 |
+| **vasc** | 23 | 1.0000 | 0.9130 | 0.9545 |
 
-![Figure 1.5: Automated Training vs Validation Loss](file:///d:/ML/MODEL_Skin-Cancer/docs/loss_curve_automated.png)
-*Figure 1.5: Cross-entropy loss convergence showing successful training stabilization.*
+![Measured confusion matrix](./confusion_matrix_measured.png)
+*Measured confusion matrix, n=1525. Counts in parentheses, row-normalised shading.*
 
-![Figure 1.6: Automated Macro F1-Score Progression](file:///d:/ML/MODEL_Skin-Cancer/docs/f1_curve_automated.png)
-*Figure 1.6: Macro F1-Score progression reaching the clinical target of ~0.73.*
+Raw numbers: `docs/evaluation_results.json`. Reproduce with:
 
-![Figure 1.8: Per-Epoch Accuracy Progression](file:///d:/ML/MODEL_Skin-Cancer/docs/accuracy_curve_automated.png)
-*Figure 1.8: Granular assessment of Top-1 Accuracy across every training epoch.*
+```bash
+python scripts/evaluate_model.py --data-dir path/to/test_set
+```
 
-### Training vs. Testing: Final Performance Summary
+#### Melanoma performance is the limiting factor
 
-To ensure clinical reliability and lack of overfitting, the final model was evaluated on both the training set and a hold-out testing set.
+Melanoma recall is **0.624** — around 38% of melanomas in the test set are
+missed. The confusion matrix shows most of that error going to `nv` (benign
+nevus). This is the dominant clinical risk in the system and no amount of
+interface polish changes it.
 
-![Figure 1.7: Training vs Testing Performance Comparison](file:///d:/ML/MODEL_Skin-Cancer/docs/performance_summary_automated.png)
-*Figure 1.7: Comparison of Accuracy, Macro-F1, Precision, and Recall across Training and Testing sessions.*
+This configuration was chosen over higher-accuracy alternatives for that reason.
+Measured options on the same test set:
 
-| Class | Optimized Threshold | Precision | Recall | F1-Score |
-| :--- | :--- | :--- | :--- | :--- |
-| **akiec** | 0.4000 | 0.6154 | 0.5000 | 0.5517 |
-| **bcc** | 0.4500 | 0.6875 | 0.8148 | 0.7458 |
-| **bkl** | 0.4000 | 0.7184 | 0.7440 | 0.7310 |
-| **df** | 0.3000 | 0.8462 | 0.6111 | 0.7097 |
-| **mel** | 0.2500 | 0.6316 | 0.5714 | 0.6000 |
-| **nv** | 0.3500 | 0.9319 | 0.9444 | 0.9382 |
-| **vasc** | 0.3000 | 0.8966 | 0.7647 | 0.8254 |
+| Config | Accuracy | Macro-F1 | Melanoma recall | Melanoma F1 |
+| :--- | ---: | ---: | ---: | ---: |
+| 300px softmax + margin | 0.8616 | 0.7668 | 0.5393 | 0.6316 |
+| **300px sigmoid + margin (shipped)** | **0.8505** | **0.7450** | **0.6236** | **0.6361** |
+| 224px + crop, sigmoid + margin (previous) | 0.8066 | 0.7116 | 0.6798 | 0.5641 |
 
-## Intelligent Out-of-Distribution (OOD) Gatekeeper
+#### Threshold operating point
 
-The system implements a two-stage gatekeeper to ensure only valid skin images are processed.
+The thresholds in `models/class_thresholds.json` were originally optimized on
+*softmax* probabilities with a different decision rule
+(`skin_cancer/scripts/optimize_thresholds.py`). They were re-fitted for the
+served pairing (sigmoid + margin rule) on the calibration split (n=997) and
+reported on the test split (n=1525):
 
-![Figure 1.2: OOD Gatekeeper & Decision Logic Flowchart](file:///d:/ML/MODEL_Skin-Cancer/docs/logic_flowchart.png)
+| Thresholds | Accuracy | Macro-F1 | Melanoma recall | Melanoma F1 |
+| :--- | ---: | ---: | ---: | ---: |
+| **Current (shipped)** | 0.8505 | 0.7450 | 0.6236 | **0.6361** |
+| Refit for macro-F1 | **0.8557** | **0.7551** | 0.5000 | 0.6075 |
+| Refit for melanoma recall | 0.8308 | 0.7367 | **0.6798** | 0.6111 |
+
+**No configuration dominates the current one.** The refit did not find free
+headroom; melanoma recall trades against accuracy monotonically. The shipped
+thresholds already sit on the efficient frontier and hold the best melanoma F1,
+so they were left unchanged.
+
+Sweeping the melanoma threshold alone (all others at the macro-F1 fit) maps the
+tradeoff, selected on calibration and reported on test:
+
+| `mel` threshold | Accuracy | Melanoma recall | Melanoma F1 |
+| ---: | ---: | ---: | ---: |
+| 0.20 | 0.8256 | 0.7416 | 0.5986 |
+| 0.25 | 0.8348 | 0.7135 | 0.6135 |
+| 0.30 | 0.8393 | 0.6798 | 0.6189 |
+| 0.35 | 0.8446 | 0.6404 | 0.6230 |
+| 0.40 | 0.8531 | 0.6180 | 0.6377 |
+| 0.45 | 0.8584 | 0.5843 | 0.6480 |
+| 0.50 | 0.8557 | 0.5000 | 0.6075 |
+
+Lowering the melanoma threshold buys recall at roughly **1 point of accuracy per
+3-4 points of melanoma recall**. Choosing a different operating point is a change
+to the `mel` entry in `models/class_thresholds.json` — a clinical decision about
+the relative cost of a missed melanoma versus a false alarm, not a tuning detail.
+
+Re-fit with:
+
+```bash
+python scripts/optimize_thresholds.py     --calib-dir path/to/calib_set --test-dir path/to/test_set     --readout sigmoid --objective mel_recall
+```
+
+It fits on the calibration split, reports on the test split, writes only with
+`--write`, and refuses to write thresholds that cost more than 2 points of test
+macro-F1.
+
+#### On training curves
+
+Per-epoch loss/F1/accuracy curves are **not available**. The checkpoints store
+only a single epoch's metrics, and the training run kept no history log. They
+cannot be reconstructed after the fact, and figures previously shown here were
+generated from hardcoded exponentials rather than measured — they have been
+removed.
+
+#### A note on checkpoints
+
+`skin_cancer/checkpoints/best.pt` uses a different architecture (two-layer head,
+`MODEL_ARCH=multihead`) and is an **earlier, weaker** run: measured accuracy
+0.6570 / macro-F1 0.4464 on the same test set. It is not the served model. The
+architecture is selected explicitly by `MODEL_ARCH` and loaded strictly, so
+swapping checkpoints fails loudly rather than silently changing the network.
+
+## Out-of-Distribution (OOD) Gatekeeper
+
+Three stages guard inference.
+
+![Figure 1.2: OOD Gatekeeper & Decision Logic Flowchart](./logic_flowchart.png)
 *Figure 1.2: Logic flow for Out-of-Distribution detection and final acceptance.*
 
-### 1. Color Profile Analysis
-Before inference, the image is analyzed for "skin-like" characteristics:
-- **Skin Hue Ratio:** Must be > 60% (detects non-skin colors).
-- **Blue-Green Ratio:** Must be < 25% (detects medical backgrounds or clothes).
-- **Saturation Check:** Rejects grayscale or near-grayscale images (sat < 15% should not exceed 70% of pixels).
-- **Average Standard Deviation:** Rejects images that are too uniform (avg_std < 7.0) or too noisy (avg_std > 65.0).
+### Stage 1: Illumination-invariant image statistics
 
-### 2. Confidence Margin Analysis
-Post-inference, the maximum margin over the class-specific threshold is checked:
-- **Decision Rule:** `Prediction = argmax(Prob - Threshold)`
-- **Low Confidence Rejection:** If the maximum margin is negative (`best_margin < 0`), the image is rejected as "Low Confidence" even if it passed the color gate.
+Every metric is a **ratio**, so scaling an image's brightness leaves it unchanged.
+
+| Metric | Rule | Rejects |
+| :--- | :--- | :--- |
+| `rel_contrast` (luminance std / mean) | `< 0.04` | Flat colour fields |
+| `hf_ratio` (high-frequency residual / total) | `> 0.45` | Pixel noise |
+| `blue_green` (over chromatic pixels only) | `> 0.60` | Sky, foliage, surgical drape |
+
+Hue checks apply only when at least 25% of pixels carry a numerically meaningful
+hue. Grayscale images fall below that and **skip** the hue checks rather than
+being rejected.
+
+#### Why this replaced the previous rules
+
+The previous gate used absolute channel standard deviation (`avg_std`), which
+scales with brightness. Identical lesions rejected or accepted purely on how dark
+the image was — a direct bias against darker skin tones and underexposed
+captures. Measured on the repository's own sample images, `ISIC_0024307`
+darkened to 35% brightness was rejected as `too_uniform` while the identical
+lighter image passed. `rel_contrast` is constant across the same range
+(0.119 → 0.120).
+
+Two further rules were removed: `grayscale_not_allowed`, which excluded
+legitimate grayscale dermoscopy, and `avg_std > 65`, which rejected
+high-contrast dermoscopic images — a dark lesion on pale skin, i.e. the
+presentation of most concern.
+
+On a 21-case check of skin images (including darkened, grayscale and
+contrast-boosted variants) plus non-skin controls, the old gate produced 6
+incorrect verdicts and the new gate 1.
+
+### Stage 2: Feature-space Mahalanobis distance
+
+Colour statistics cannot reject a photograph of another real object: a
+desaturated animal photo has statistics inside the dermoscopic range. Semantic
+rejection requires the classifier's own feature space.
+
+This stage is **not active until fitted**. Run:
+
+```bash
+python scripts/calibrate_ood.py --data-dir path/to/dermoscopic_images
+```
+
+Until then the system runs on Stage 1 alone and will accept some non-clinical
+photographs. Calibrate on data spanning the full range of skin tones you intend
+to serve — a gate fitted only to light skin reintroduces the bias removed above.
+
+### Stage 3: Confidence margin
+
+`argmax(probability - class threshold)`; a negative best margin is rejected as
+`low_confidence`.
+
+> **Do not add max-softmax or energy-based OOD to this checkpoint.** Both were
+> measured and are anti-correlated: a blank white field scores max-softmax
+> **0.994** and a *more* in-distribution energy (-3.87) than any real lesion
+> image (-2.23 to -3.20). The feature-space stage rejects that same white field
+> by a wide margin.
 
 ---
 *Last Updated: 2026-03-27*
