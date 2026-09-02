@@ -6,7 +6,6 @@ const API_BASE = "/api";
 
 // ─── Application State ──────────────────────────────────────────────────────
 const state = {
-    currentView: "view-console",
     selectedFile: null,
     selectedAnatomicSite: "Anterior Torso",
     zoom: 1.0,
@@ -71,8 +70,15 @@ const PATHOLOGY_META = {
 
 // ─── Toast Notifications ────────────────────────────────────────────────────
 function toast(message, type = "info") {
-    const container = document.getElementById("toast-container");
-    if (!container) return;
+    // The container is created on demand: index.html does not define one, which
+    // previously made every notification in the app a silent no-op.
+    let container = document.getElementById("toast-container");
+    if (!container) {
+        container = document.createElement("div");
+        container.id = "toast-container";
+        container.className = "fixed top-4 right-4 z-50 flex flex-col gap-2";
+        document.body.appendChild(container);
+    }
     
     const colors = {
         info: "bg-surface-elevated border-cyan-500/50 text-cyan-400",
@@ -107,7 +113,13 @@ async function apiCall(endpoint, options = {}) {
             let errorMsg = `Server Error (${response.status})`;
             try {
                 const errJson = await response.json();
-                errorMsg = errJson.detail || errorMsg;
+                // OOD rejections send {message, reason}; everything else a string.
+                const detail = errJson.detail;
+                if (typeof detail === "string") {
+                    errorMsg = detail;
+                } else if (detail && detail.message) {
+                    errorMsg = detail.message;
+                }
             } catch (_) {}
             throw new Error(errorMsg);
         }
@@ -119,7 +131,6 @@ async function apiCall(endpoint, options = {}) {
 
 // ─── SPA Navigation Router ──────────────────────────────────────────────────
 function navigate(viewId, payload = null) {
-    state.currentView = viewId;
 
     // 1. Hide all view containers
     const views = document.querySelectorAll(".view-container");
@@ -200,34 +211,22 @@ function renderGradCamHeatmap(base64Data) {
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (base64Data) {
-        const img = new Image();
-        img.onload = () => {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        };
-        img.src = base64Data;
-    } else {
-        // Render synthetic Jet thermal activation heatmap centered on lesion
-        const cx = canvas.width / 2;
-        const cy = canvas.height / 2;
-        const radius = canvas.width * 0.4;
-        
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-        grad.addColorStop(0, "rgba(255, 0, 0, 0.85)");      // High activation (Red)
-        grad.addColorStop(0.3, "rgba(255, 165, 0, 0.75)");  // Orange
-        grad.addColorStop(0.55, "rgba(255, 255, 0, 0.6)");  // Yellow
-        grad.addColorStop(0.75, "rgba(0, 255, 128, 0.45)"); // Green
-        grad.addColorStop(0.9, "rgba(0, 100, 255, 0.25)");  // Blue
-        grad.addColorStop(1.0, "rgba(0, 0, 128, 0)");       // Transparent outer
-        
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.fill();
-    }
+    // Only ever draw attribution the model actually produced. With no data the
+    // canvas stays empty and the overlay is reported as unavailable.
+    if (!base64Data) return;
+
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+    img.src = base64Data;
 }
 
 function toggleGradCamHeatmap() {
+    if (!state.heatmapBase64) {
+        toast("No Grad-CAM attribution is available for this scan.", "warning");
+        return;
+    }
     state.heatmapVisible = !state.heatmapVisible;
     const canvas = document.getElementById("console-heatmap-canvas");
     const toggleBtn = document.getElementById("btn-toggle-heatmap");
@@ -259,9 +258,9 @@ function updateCalibrationFilters() {
     img.style.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
 
     // Update labels (support both val- and slider--val IDs for resilience)
-    const bVal = document.getElementById("val-brightness") || document.getElementById("slider-brightness-val");
-    const cVal = document.getElementById("val-contrast") || document.getElementById("slider-contrast-val");
-    const sVal = document.getElementById("val-saturation") || document.getElementById("slider-saturation-val");
+    const bVal = document.getElementById("val-brightness");
+    const cVal = document.getElementById("val-contrast");
+    const sVal = document.getElementById("val-saturation");
 
     if (bVal) bVal.textContent = `${brightness}%`;
     if (cVal) cVal.textContent = `${contrast}%`;
@@ -321,46 +320,34 @@ function setConsoleViewportImage(src) {
 }
 
 // ─── Clinical Sample Library Engine ─────────────────────────────────────────
+// Reference cases served from the repository's own `samples/` directory
+// (HAM10000 / ISIC dermoscopic images, 600x450). Labels are sourced from the
+// training repository's split manifests (skin_cancer/data/processed/*.csv).
+// Do not add an entry here with a diagnosis you cannot source.
 const CLINICAL_SAMPLES = [
-    {
-        id: "sample-mel",
-        name: "Melanoma (MEL)",
-        site: "Anterior Torso",
-        category: "Malignant",
-        desc: "Asymmetric lesion with irregular borders & color variation",
-        url: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?auto=format&fit=crop&w=600&q=80"
-    },
-    {
-        id: "sample-akiec",
-        name: "Actinic Keratosis (AKIEC)",
-        site: "Head & Neck",
-        category: "Pre-Malignant",
-        desc: "Scaly erythematous macule on sun-damaged tissue",
-        url: "https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?auto=format&fit=crop&w=600&q=80"
-    },
     {
         id: "sample-nv",
         name: "Melanocytic Nevus (NV)",
         site: "Posterior Torso",
         category: "Benign",
-        desc: "Symmetrical benign nevomelanocytic mole",
-        url: "https://images.unsplash.com/photo-1576091160550-2173dba999ef?auto=format&fit=crop&w=600&q=80"
+        desc: "Symmetrical benign nevomelanocytic mole (HAM10000)",
+        url: "/samples/nv.jpg"
     },
     {
-        id: "sample-bcc",
-        name: "Basal Cell Carcinoma (BCC)",
-        site: "Upper Extremities",
-        category: "Malignant",
-        desc: "Pearly translucent papule with telangiectasia",
-        url: "https://images.unsplash.com/photo-1581595220892-b0739db3ba8c?auto=format&fit=crop&w=600&q=80"
-    },
-    {
-        id: "sample-bkl",
-        name: "Benign Keratosis (BKL)",
-        site: "Lower Extremities",
+        id: "sample-isic-0024307",
+        name: "Melanocytic Nevus (ISIC_0024307)",
+        site: "Anterior Torso",
         category: "Benign",
-        desc: "Stuck-on verrucous seborrheic keratosis pattern",
-        url: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?auto=format&fit=crop&w=600&q=80"
+        desc: "HAM10000 held-out test case, ground truth nv (data/processed/test.csv)",
+        url: "/samples/ISIC_0024307.jpg"
+    },
+    {
+        id: "sample-ood",
+        name: "Non-Skin Control",
+        site: "Anterior Torso",
+        category: "Control",
+        desc: "Non-clinical image. Rejected only once the feature-space OOD stage is calibrated",
+        url: "/samples/cat.jpg"
     }
 ];
 
@@ -429,33 +416,6 @@ function loadSampleImage(sampleInput) {
     toast(`Loaded clinical sample: ${sample.name || 'Case'}`, "info");
 }
 
-// Helper to create synthetic skin lesion canvas blob if fetch/CORS fails
-function createFallbackLesionBlob() {
-    return new Promise((resolve) => {
-        const canvas = document.createElement("canvas");
-        canvas.width = 224;
-        canvas.height = 224;
-        const ctx = canvas.getContext("2d");
-        
-        // Base skin background
-        ctx.fillStyle = "#d8a384";
-        ctx.fillRect(0, 0, 224, 224);
-        
-        // Irregular pigment lesion
-        ctx.fillStyle = "#4a2d1f";
-        ctx.beginPath();
-        ctx.ellipse(112, 112, 50, 40, Math.PI / 4, 0, 2 * Math.PI);
-        ctx.fill();
-
-        ctx.fillStyle = "#26140b";
-        ctx.beginPath();
-        ctx.ellipse(105, 108, 25, 20, 0, 0, 2 * Math.PI);
-        ctx.fill();
-
-        canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.9);
-    });
-}
-
 // ─── Diagnostic API Analysis Trigger ────────────────────────────────────────
 async function runAnalysis() {
     const analyzeBtn = document.getElementById("btn-run-analysis");
@@ -478,18 +438,15 @@ async function runAnalysis() {
         if (state.selectedFile) {
             formData.append("file", state.selectedFile);
         } else {
-            // Attempt fetching viewport src or fallback to synthetic canvas blob
-            try {
-                const src = viewportImg.src;
-                const res = await fetch(src);
-                if (!res.ok) throw new Error("Fetch failed");
-                const blob = await res.blob();
-                formData.append("file", blob, "lesion_scan.jpg");
-            } catch (_) {
-                // Fallback to generated canvas blob
-                const fallbackBlob = await createFallbackLesionBlob();
-                formData.append("file", fallbackBlob, "sample_lesion.jpg");
+            // Fetch the selected reference image. If it cannot be retrieved we
+            // abort — analysing a stand-in image would report a diagnosis for
+            // something the user never submitted.
+            const res = await fetch(viewportImg.src);
+            if (!res.ok) {
+                throw new Error("Could not load the selected image. Please re-select or upload it.");
             }
+            const blob = await res.blob();
+            formData.append("file", blob, "lesion_scan.jpg");
         }
         
         formData.append("site", state.selectedAnatomicSite);
@@ -506,10 +463,13 @@ async function runAnalysis() {
         if (result.heatmap_base64) {
             state.heatmapBase64 = result.heatmap_base64;
             renderGradCamHeatmap(state.heatmapBase64);
+            toast("Diagnostic inference & Grad-CAM map generated!", "success");
+        } else {
+            state.heatmapBase64 = null;
+            toast("Inference complete. Grad-CAM attribution unavailable for this scan.", "warning");
         }
 
         state.latestResult = result;
-        toast("Diagnostic inference & Grad-CAM map generated!", "success");
 
         // Transition to Diagnostic Results view
         navigate("view-results", result);
@@ -579,7 +539,6 @@ function renderResultsView(data) {
     const pathologyCode = document.getElementById("results-pathology-code");
     const pathologyType = document.getElementById("results-pathology-type");
     const pathologyDesc = document.getElementById("results-pathology-desc");
-    const resultsImage = document.getElementById("results-scan-preview");
 
     if (pathologyTitle) pathologyTitle.textContent = meta.name;
     if (pathologyCode) pathologyCode.textContent = meta.code;
@@ -588,7 +547,6 @@ function renderResultsView(data) {
         pathologyType.className = `px-3 py-1 rounded-lg text-xs font-mono font-bold uppercase border ${isHighRisk ? 'bg-rose-500/15 border-rose-500/40 text-rose-400' : 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400'}`;
     }
     if (pathologyDesc) pathologyDesc.textContent = meta.desc;
-    if (resultsImage && data._previewUrl) resultsImage.src = data._previewUrl;
 
     // 4. 7-Class Probability Matrix
     const matrixContainer = document.getElementById("results-probability-matrix");
@@ -1097,7 +1055,7 @@ document.addEventListener("DOMContentLoaded", () => {
             reader.readAsDataURL(state.selectedFile);
             return;
         } else {
-            const viewportImg = document.getElementById("viewport-image");
+            const viewportImg = document.getElementById("console-viewport-img");
             if (viewportImg && viewportImg.src && !viewportImg.src.includes("placeholder")) {
                 imgSrc = viewportImg.src;
             }
