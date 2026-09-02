@@ -239,7 +239,16 @@ macro-F1 with a linear penalty below the melanoma floor, rather than macro-F1
 alone — a hard floor would throw away good epochs over 170 validation melanomas'
 worth of noise.
 
-### Run 3 — 3 September 2026, Tesla T4, 31 of 35 epochs (early stop). **Passed.**
+### Run 3 — 3 September 2026, Tesla T4, 31 of 35 epochs (early stop). **Passed the gate; artefacts lost.**
+
+> The session was interactive and was closed without saving a version, so Kaggle
+> deleted `/kaggle/working`. The weights are unrecoverable — `TRAINED_FILE/Run3.ipynb`
+> keeps the printed metrics but not the 41 MB they describe. **The numbers below
+> are real measurements of a checkpoint that no longer exists**, and are kept as
+> the target a rerun should land near, not as the description of anything
+> deployed. The notebook now refuses to end quietly on this: a final cell prints
+> the artefact list with checksums and, in an interactive session, says loudly
+> that nothing is saved yet.
 
 Best epoch 21, restored and verified (`drift 0.0000` — the guard from run 2 does
 what it was built to do). Measured on the lesion-disjoint test split, n=1503:
@@ -295,11 +304,23 @@ table that looks authoritative.
 
 ## Status
 
-Run 3 passed the release gate and is the first artefact from this notebook that
-is safe to deploy. Every cell was also executed end to end on CPU against a
-synthetic HAM10000 stand-in before the run, and the threshold search validated on
-synthetic logits starting *below* the melanoma floor — the case that made run 2
-degenerate.
+Run 3 showed the recipe clears the release gate, and its artefacts were then lost
+to an unsaved Kaggle session. **A rerun is needed to produce a deployable model,
+and the recipe is deliberately unchanged for it** — reproducing a known-good
+result is worth more than a speculative improvement, because a tweaked rerun that
+lands at 0.69 leaves you unable to say whether it was the tweak or run-to-run
+variance.
+
+Expect close but not identical numbers: the splits are deterministic
+(`RandomState(42)`, same images in the same four splits), but `cudnn.benchmark`,
+the weighted sampler and mixup all draw from unseeded CUDA-side randomness.
+Macro-F1 within a point or two of 0.7224 is a reproduction; materially below 0.70
+is a signal worth investigating rather than shipping.
+
+Run it as **Save Version → Save & Run All (Commit)**. Every cell was also
+executed end to end on CPU against a synthetic HAM10000 stand-in, and the
+threshold search validated on synthetic logits starting *below* the melanoma
+floor — the case that made run 2 degenerate.
 
 What is still unmeasured: performance on skin tones outside HAM10000's
 distribution (the brightness sweep is a crude proxy, not a substitute for a
