@@ -11,7 +11,8 @@ import base64
 from io import BytesIO
 
 from .config import (MODEL_PATH, THRESHOLD_PATH, IMG_SIZE, MODEL_ARCH,
-                     CALIBRATION_PATH, DEFAULT_TEMPERATURE, DEFAULT_MEL_ALERT_THRESHOLD)
+                     CALIBRATION_PATH, DEFAULT_TEMPERATURE, DEFAULT_MEL_ALERT_THRESHOLD,
+                     DEFAULT_READOUT)
 from .model import build_model, get_conv_head, get_pooled_features
 from .ood import color_gate, load_thresholds, FeatureSpaceOOD
 
@@ -34,14 +35,16 @@ class SkinCancerPredictor:
         # Confidence calibration and the melanoma alert channel.
         self.temperature = DEFAULT_TEMPERATURE
         self.mel_alert_threshold = DEFAULT_MEL_ALERT_THRESHOLD
+        self.readout = DEFAULT_READOUT
         try:
             with open(CALIBRATION_PATH, "r") as f:
                 calib = json.load(f)
             self.temperature = float(calib.get("temperature", self.temperature))
             self.mel_alert_threshold = calib.get("mel_alert_threshold",
                                                  self.mel_alert_threshold)
-            print("Calibration loaded: T={:.2f}, melanoma alert at p>={}".format(
-                self.temperature, self.mel_alert_threshold))
+            self.readout = calib.get("readout", self.readout)
+            print("Calibration loaded: readout={}, T={:.2f}, melanoma alert at p>={}".format(
+                self.readout, self.temperature, self.mel_alert_threshold))
         except FileNotFoundError:
             print("No calibration file; confidences are raw and the melanoma alert "
                   "is off. Run scripts/fit_calibration.py to enable both.")
@@ -229,7 +232,11 @@ class SkinCancerPredictor:
             # Temperature scaling: divides the logits before the readout, which
             # flattens over-confident probabilities without retraining. T=1.0 is
             # a no-op.
-            probs = torch.sigmoid(logits / self.temperature).squeeze(0).cpu().numpy().tolist()
+            scaled = logits / self.temperature
+            if self.readout == "softmax":
+                probs = torch.softmax(scaled, dim=1).squeeze(0).cpu().numpy().tolist()
+            else:
+                probs = torch.sigmoid(scaled).squeeze(0).cpu().numpy().tolist()
 
         results = {c: probs[i] for i, c in enumerate(self.classes)}
 

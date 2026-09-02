@@ -20,5 +20,6 @@
     "melanoma_recall_argmax": 0.6235955056179775,
     "melanoma_surfaced": 0.898876404494382,
     "review_rate": 0.3051224944320713
-  }
+  },
+  "readout": "sigmoid"
 }

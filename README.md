@@ -50,6 +50,8 @@ MODEL_Skin-Cancer/
 │   ├── calibrate_ood.py        # Fit the OOD gate to real data
 │   ├── build_class_samples.py  # Build the class figure from real images
 │   └── build_audit_pdf.py      # Build the audit PDF
+├── training/
+│   └── kaggle_train_dermascan.ipynb  # GPU retraining -> CPU-ready bundle
 ├── tests/                      # pytest suite (runs against a temp database)
 ├── LICENSE                     # MIT (code) + third-party data terms
 ├── pytest.ini
@@ -300,6 +302,8 @@ python scripts/evaluate_model.py --data-dir path/to/test_set
   does not, and known issues.
 - **[docs/DermaScan_Serving_Audit.pdf](docs/DermaScan_Serving_Audit.pdf)** — printable
   audit report.
+- **[training/README.md](training/README.md)** — retraining on a Kaggle GPU, and why the
+  notebook is built the way it is.
 
 Every figure in these documents is measured. Reproduce them with
 `scripts/evaluate_model.py` and `scripts/build_class_samples.py`.

@@ -33,6 +33,11 @@ DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", 1.0))
 # None disables the alert channel.
 DEFAULT_MEL_ALERT_THRESHOLD = None
 
+# Probability readout. Must match what the thresholds were fitted under: the
+# current checkpoint was fitted with sigmoid, a softmax-trained model exports
+# "softmax" in its calibration file and this follows it.
+DEFAULT_READOUT = os.getenv("READOUT", "sigmoid")
+
 # Inference resolution. Must match configs/default.yaml img_size in the training
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))
