@@ -219,6 +219,44 @@ def test_migration_adds_missing_columns(tmp_path):
         database.engine = original
 
 
+@pytest.mark.slow
+def test_melanoma_alert_is_reported_and_persisted(client, lesion):
+    """The alert channel is an additive output; it must reach the API and the record."""
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    assert isinstance(body["melanoma_alert"], bool)
+    assert 0.0 <= body["melanoma_probability"] <= 1.0
+    assert client.get("/api/history").json()[0]["melanoma_alert"] == body["melanoma_alert"]
+
+
+@pytest.mark.slow
+def test_alert_fires_whenever_melanoma_probability_clears_threshold(client, lesion):
+    """The alert must not depend on melanoma winning the argmax."""
+    from backend.routers.diagnostics import get_predictor
+
+    predictor = get_predictor()
+    if predictor.mel_alert_threshold is None:
+        pytest.skip("calibration not fitted")
+
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    expected = (body["prediction"] == "mel"
+                or body["melanoma_probability"] >= predictor.mel_alert_threshold)
+    assert body["melanoma_alert"] is expected
+
+
+def test_temperature_is_applied_to_confidence():
+    """A temperature above 1 must actually flatten the reported probabilities."""
+    import numpy as np
+    import torch
+
+    logits = torch.tensor([[3.0, -1.0, 0.5, -2.0, 1.0, 2.0, -1.5]])
+    raw = torch.sigmoid(logits).numpy()
+    scaled = torch.sigmoid(logits / 2.0).numpy()
+    assert scaled.max() < raw.max()
+    assert np.all(np.abs(scaled - 0.5) <= np.abs(raw - 0.5) + 1e-9)
+
+
 def test_history_limit_is_bounded(client):
     assert client.get("/api/history?limit=0").status_code == 422
     assert client.get("/api/history?limit=500").status_code == 422

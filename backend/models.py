@@ -17,6 +17,8 @@ class DiagnosticSession(Base):
     threshold_used = Column(Float, nullable=True)
     all_scores = Column(JSON, nullable=True)
     is_high_risk = Column(Boolean, default=False)
+    melanoma_alert = Column(Boolean, default=False)
+    melanoma_probability = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)

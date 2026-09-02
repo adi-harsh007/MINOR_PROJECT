@@ -10,7 +10,8 @@ from typing import Optional
 import base64
 from io import BytesIO
 
-from .config import MODEL_PATH, THRESHOLD_PATH, IMG_SIZE, MODEL_ARCH
+from .config import (MODEL_PATH, THRESHOLD_PATH, IMG_SIZE, MODEL_ARCH,
+                     CALIBRATION_PATH, DEFAULT_TEMPERATURE, DEFAULT_MEL_ALERT_THRESHOLD)
 from .model import build_model, get_conv_head, get_pooled_features
 from .ood import color_gate, load_thresholds, FeatureSpaceOOD
 
@@ -30,6 +31,23 @@ class SkinCancerPredictor:
                 "Refusing to serve predictions with unvalidated decision thresholds."
             ) from e
             
+        # Confidence calibration and the melanoma alert channel.
+        self.temperature = DEFAULT_TEMPERATURE
+        self.mel_alert_threshold = DEFAULT_MEL_ALERT_THRESHOLD
+        try:
+            with open(CALIBRATION_PATH, "r") as f:
+                calib = json.load(f)
+            self.temperature = float(calib.get("temperature", self.temperature))
+            self.mel_alert_threshold = calib.get("mel_alert_threshold",
+                                                 self.mel_alert_threshold)
+            print("Calibration loaded: T={:.2f}, melanoma alert at p>={}".format(
+                self.temperature, self.mel_alert_threshold))
+        except FileNotFoundError:
+            print("No calibration file; confidences are raw and the melanoma alert "
+                  "is off. Run scripts/fit_calibration.py to enable both.")
+        except Exception as e:
+            print("Warning: could not read {}: {}".format(CALIBRATION_PATH, e))
+
         # Architecture must match the training checkpoint exactly. load_state_dict
         # is strict, so a mismatched checkpoint fails loudly instead of serving a
         # different network than the one the published metrics describe.
@@ -208,7 +226,10 @@ class SkinCancerPredictor:
             # best melanoma F1 (0.636) of any configuration, at accuracy 0.851 /
             # macro-F1 0.745. Melanoma recall is the error that matters clinically
             # here. Re-run threshold optimisation if this readout changes.
-            probs = torch.sigmoid(logits).squeeze(0).cpu().numpy().tolist()
+            # Temperature scaling: divides the logits before the readout, which
+            # flattens over-confident probabilities without retraining. T=1.0 is
+            # a no-op.
+            probs = torch.sigmoid(logits / self.temperature).squeeze(0).cpu().numpy().tolist()
 
         results = {c: probs[i] for i, c in enumerate(self.classes)}
 
@@ -226,6 +247,16 @@ class SkinCancerPredictor:
                 ),
             }
 
+        # ── Melanoma alert ────────────────────────────────────────
+        # Recall is limited by the argmax, not by what the model knows: on
+        # melanomas it misses, p(mel) is still substantial. Flagging on p(mel)
+        # directly surfaces them without altering the primary prediction.
+        mel_probability = results["mel"]
+        melanoma_alert = bool(
+            self.mel_alert_threshold is not None
+            and (best_class == "mel" or mel_probability >= self.mel_alert_threshold)
+        )
+
         target_idx = self.classes.index(best_class)
         heatmap_base64 = self.generate_gradcam_base64(image, target_idx)
 
@@ -234,5 +265,7 @@ class SkinCancerPredictor:
             "confidence": results[best_class],
             "threshold": self.thresholds[best_class],
             "scores": results,
+            "melanoma_alert": melanoma_alert,
+            "melanoma_probability": mel_probability,
             "heatmap_base64": heatmap_base64
         }

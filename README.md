@@ -218,6 +218,13 @@ Melanoma recall is the limiting factor and the dominant clinical risk. This
 system is a research prototype and is **not a substitute for examination by a
 qualified clinician.**
 
+To mitigate this without retraining, a **melanoma alert channel** flags any scan whose
+melanoma probability clears a fitted threshold, whatever class wins the argmax. It
+surfaces **90% of melanomas** (against 62% from the prediction alone) at a
+31% review rate, and does not change the primary prediction. Confidence is also
+temperature-scaled, which cuts calibration error from 0.116 to 0.051. See
+[MODEL_DETAILS](docs/MODEL_DETAILS.md#confidence-calibration-and-the-melanoma-alert-channel).
+
 To reproduce on a labelled hold-out set:
 
 ```bash

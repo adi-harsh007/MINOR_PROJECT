@@ -505,7 +505,17 @@ function renderResultsView(data) {
     const bannerText = document.getElementById("results-alert-text");
 
     if (banner && bannerIcon && bannerText) {
-        if (isHighRisk) {
+        // Precedence: malignant prediction, then an unresolved melanoma alert,
+        // then benign. The alert must outrank the benign banner - reassuring the
+        // user while p(melanoma) is high is the dangerous combination.
+        if (!isHighRisk && data.melanoma_alert) {
+            banner.className = "mb-6 px-6 py-4 rounded-xl border bg-amber-500/10 border-amber-500/40 flex items-center justify-between";
+            bannerIcon.className = "material-symbols-outlined text-amber-400 text-2xl animate-pulse";
+            bannerIcon.textContent = "release_alert";
+            bannerText.className = "font-mono text-xs font-bold uppercase tracking-wider text-amber-400";
+            bannerText.textContent =
+                `MELANOMA NOT EXCLUDED — p(mel) ${(data.melanoma_probability * 100).toFixed(1)}% — SPECIALIST REVIEW RECOMMENDED`;
+        } else if (isHighRisk) {
             banner.className = "mb-6 px-6 py-4 rounded-xl border bg-rose-500/10 border-rose-500/30 flex items-center justify-between";
             bannerIcon.className = "material-symbols-outlined text-rose-400 text-2xl animate-pulse";
             bannerIcon.textContent = "warning";
@@ -516,7 +526,7 @@ function renderResultsView(data) {
             bannerIcon.className = "material-symbols-outlined text-emerald-400 text-2xl";
             bannerIcon.textContent = "check_circle";
             bannerText.className = "font-mono text-xs font-bold uppercase tracking-wider text-emerald-400";
-            bannerText.textContent = "BENIGN MORPHOLOGY EVALUATION — LOW RISK CLINICAL PATTERN";
+            bannerText.textContent = "NO MALIGNANT PATTERN IDENTIFIED — THIS IS NOT A CLINICAL CLEARANCE";
         }
     }
 

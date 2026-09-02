@@ -21,6 +21,18 @@ THRESHOLD_PATH = os.path.join(BASE_DIR, "models", "class_thresholds.json")
 MODEL_PATH = os.getenv("MODEL_PATH", MODEL_PATH)
 THRESHOLD_PATH = os.getenv("THRESHOLD_PATH", THRESHOLD_PATH)
 
+# Confidence calibration and the melanoma alert channel, fitted by
+# scripts/fit_calibration.py. Defaults below apply when the file is absent.
+CALIBRATION_PATH = os.getenv(
+    "CALIBRATION_PATH", os.path.join(BASE_DIR, "models", "calibration.json"))
+
+# Temperature > 1 flattens over-confident probabilities. 1.0 disables it.
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", 1.0))
+
+# Flag "melanoma not excluded" when p(mel) reaches this, whatever class wins.
+# None disables the alert channel.
+DEFAULT_MEL_ALERT_THRESHOLD = None
+
 # Inference resolution. Must match configs/default.yaml img_size in the training
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))

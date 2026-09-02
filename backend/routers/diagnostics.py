@@ -112,6 +112,8 @@ async def analyze_lesion(
             threshold_used=result["threshold"],
             all_scores=result["scores"],
             is_high_risk=result["prediction"] in ["mel", "bcc", "akiec"],
+            melanoma_alert=result.get("melanoma_alert", False),
+            melanoma_probability=result.get("melanoma_probability"),
             completed_at=datetime.now(timezone.utc)
         )
         db.add(session)
@@ -126,6 +128,8 @@ async def analyze_lesion(
             "scores": result["scores"],
             "is_high_risk": session.is_high_risk,
             "anatomic_site": session.anatomic_site,
+            "melanoma_alert": session.melanoma_alert,
+            "melanoma_probability": session.melanoma_probability,
             "heatmap_base64": result.get("heatmap_base64"),
         }
     except HTTPException:
@@ -155,6 +159,7 @@ def get_history(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_
             "confidence": s.confidence,
             "is_high_risk": s.is_high_risk,
             "anatomic_site": s.anatomic_site,
+            "melanoma_alert": s.melanoma_alert,
             "scores": s.all_scores,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         }

@@ -1,0 +1,24 @@
+{
+  "temperature": 2.0,
+  "mel_alert_threshold": 0.45,
+  "target_sensitivity": 0.9,
+  "fitted_on": "HAM10000 calibration split (n=997)",
+  "reported_on": "HAM10000 held-out test split (n=1525)",
+  "note": "Temperature chosen by minimising expected calibration error on the calibration split; alert threshold chosen as the lowest review rate reaching 90% melanoma sensitivity there. Reproduce with scripts/fit_calibration.py.",
+  "test_metrics_before": {
+    "accuracy": 0.8504918032786886,
+    "ece": 0.11624886071095702,
+    "mean_confidence_wrong": 0.9417723417282104,
+    "melanoma_recall_argmax": 0.6235955056179775,
+    "melanoma_surfaced": 0.8764044943820225,
+    "review_rate": 0.24201930215293244
+  },
+  "test_metrics_after": {
+    "accuracy": 0.8544262295081967,
+    "ece": 0.05109406748756033,
+    "mean_confidence_wrong": 0.8140771389007568,
+    "melanoma_recall_argmax": 0.6235955056179775,
+    "melanoma_surfaced": 0.898876404494382,
+    "review_rate": 0.3051224944320713
+  }
+}

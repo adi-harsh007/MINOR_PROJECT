@@ -27,7 +27,11 @@ def _add_missing_columns():
         return
 
     existing = {c["name"] for c in inspector.get_columns("diagnostic_sessions")}
-    additions = {"anatomic_site": "VARCHAR(64)"}
+    additions = {
+        "anatomic_site": "VARCHAR(64)",
+        "melanoma_alert": "BOOLEAN",
+        "melanoma_probability": "FLOAT",
+    }
 
     with engine.begin() as conn:
         for name, ddl_type in additions.items():

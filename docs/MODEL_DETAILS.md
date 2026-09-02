@@ -168,6 +168,60 @@ removed.
 architecture is selected explicitly by `MODEL_ARCH` and loaded strictly, so
 swapping checkpoints fails loudly rather than silently changing the network.
 
+## Confidence calibration and the melanoma alert channel
+
+Two distinct problems: the model **misses melanomas** (recall 0.624) and it does so
+**confidently** (mean stated confidence on wrong answers 0.942). They have
+different fixes, and neither requires retraining.
+
+### Why the alert channel works
+
+On the melanomas the model misses, it still assigns a substantial melanoma
+probability — median p(mel) = 0.539 across the 67 missed cases. The recall ceiling is
+imposed by the **argmax**, not by what the model knows: `nv` simply edges ahead.
+Flagging on p(mel) directly, independently of which class wins, recovers most of them.
+
+### Fitted values
+
+Temperature is chosen on the calibration split (n=997) by minimising expected
+calibration error; the alert threshold is the lowest review rate reaching 90% melanoma
+sensitivity there. Both are reported on the held-out test split (n=1525).
+
+| Measure | Before | After |
+| :--- | ---: | ---: |
+| Accuracy | 0.8505 | **0.8544** |
+| Expected calibration error | 0.1162 | **0.0511** |
+| Mean confidence when wrong | 0.9418 | **0.8141** |
+| Melanoma recall (argmax) | 0.6236 | 0.6236 |
+| **Melanoma surfaced (argmax or alert)** | 0.8764 | **0.8989** |
+| Cases flagged for review | 0.2420 | 0.3051 |
+
+`temperature = 2.0`, `mel_alert_threshold = 0.45` in `models/calibration.json`.
+
+Temperature scaling is not a trade here: accuracy rises slightly and melanoma recall is
+unchanged, because dividing the logits leaves most of the ordering intact. What changes
+is that stated confidence stops being uniformly ~0.97.
+
+The alert channel is a genuine trade: **90% of melanomas surfaced against a
+31% review rate**. It does not alter the primary prediction — it is an
+additional output, shown in the UI as "melanoma not excluded".
+
+Re-fit with:
+
+```bash
+python scripts/fit_calibration.py --calib-dir <calib> --test-dir <test> --write
+```
+
+`--target-sensitivity` moves the operating point; higher sensitivity means more cases
+flagged. With no calibration file present, confidences are raw and the alert is off.
+
+### What this does not do
+
+Neither fix improves what the model actually knows. Melanoma recall by argmax is
+unchanged at 0.624, and the alert channel raises the review burden rather than the
+model's discrimination. A real improvement needs retraining — melanoma-weighted loss,
+more melanoma data, or a dedicated melanoma-versus-nevus head.
+
 ## Out-of-Distribution (OOD) Gatekeeper
 
 Three stages guard inference.
