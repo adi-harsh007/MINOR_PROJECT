@@ -221,10 +221,22 @@ def main():
 
     logits, y_true = collect_logits(predictor, samples, args.batch_size)
 
+    # Temperature is part of the decision rule, not a display detail: serving
+    # divides the logits by it BEFORE applying the per-class thresholds
+    # (backend/ml_engine.py), and the notebook fits those thresholds on
+    # temperature-scaled probabilities. Scoring un-scaled probabilities here
+    # measured a rule nobody runs - it reported macro-F1 0.7116 and melanoma
+    # recall 0.7765 for a model whose served rule gives 0.7123 and 0.8000, i.e.
+    # this script would have flagged a training/serving divergence that was
+    # entirely its own.
+    T = float(getattr(predictor, "temperature", 1.0) or 1.0)
+    print("Applying the served temperature T={:.3f} before thresholding".format(T))
+    scaled = logits / T
+
     readouts = ["sigmoid", "softmax"] if args.activation == "both" else [args.activation]
     results = {}
     for name in readouts:
-        probs = sigmoid(logits) if name == "sigmoid" else softmax(logits)
+        probs = sigmoid(scaled) if name == "sigmoid" else softmax(scaled)
         results[name] = {
             "thresholded": score(y_true, predict_with_thresholds(probs, thresholds), classes),
             "plain_argmax": score(y_true, np.argmax(probs, axis=1), classes),

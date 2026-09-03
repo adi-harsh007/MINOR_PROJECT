@@ -52,36 +52,43 @@ Regenerate with `python scripts/build_class_samples.py`.*
 
 Metrics are based on optimized classification thresholds to maximize the Macro F1-Score.
 
-### Threshold-optimization run (calibration split, n=997)
-- **Baseline F1 (Macro):** 0.7272
-- **Optimized F1 (Macro):** 0.7288
+### Decision-layer fit (calib + val, n=2537)
 
-These are calibration-set figures recorded in `models/class_thresholds.json` when
-the thresholds were fitted. They are **not** test-set performance; see below.
+The thresholds, temperature and melanoma alert cutoff in `models/` were fitted
+together on the merged calibration and validation splits — 2537 images, 280
+melanomas — and reported on a test split that was touched exactly once.
+
+Fitting on `calib` alone (1009 images, 110 melanomas) was not enough to pin seven
+thresholds: one run read calibration macro-F1 0.7219 and delivered 0.6904 on
+test. `val` had already chosen the checkpoint, so these thresholds carry mild
+optimism; that is the deliberate trade for roughly half the variance. See
+[training/README.md](../training/README.md).
 
 ### Measured Test-Set Performance
 
-Measured by running the served checkpoint over the full held-out HAM10000 test
-split (1525 images) — not reconstructed from summary statistics.
+Measured by running the served checkpoint over a **lesion-disjoint** held-out
+split of HAM10000 (1503 images) — not reconstructed from summary statistics.
 
-- **Served model:** `models/latest.pt` (plain timm EfficientNet-B3, `MODEL_ARCH=plain`)
+- **Served model:** `models/latest.pt` (plain timm EfficientNet-B3, `MODEL_ARCH=plain`),
+  run `20260903-043324` epoch 19, EMA weights, fingerprint `27629fd06174b38f`
 - **Preprocessing:** `Resize(300, 300)`, no centre crop — matches `img_size: 300`
-  in the training config
-- **Readout:** sigmoid, decision rule `argmax(probability - class threshold)`
-- **Accuracy:** 0.8505  **Macro-F1:** 0.7450
+  in the bundle
+- **Readout:** softmax at temperature 1.15, decision rule
+  `argmax(probability - class threshold)`
+- **Accuracy:** 0.8090  **Macro-F1:** 0.7123  **ECE:** 0.0337
 
 | Class | Support | Precision | Recall | F1 |
 | :--- | ---: | ---: | ---: | ---: |
-| **akiec** | 71 | 0.8276 | 0.6761 | 0.7442 |
-| **bcc** | 73 | 0.7742 | 0.6575 | 0.7111 |
-| **bkl** | 169 | 0.7407 | 0.7101 | 0.7251 |
-| **df** | 12 | 0.4667 | 0.5833 | 0.5185 |
-| **mel** | 178 | 0.6491 | 0.6236 | 0.6361 |
-| **nv** | 999 | 0.9093 | 0.9429 | 0.9258 |
-| **vasc** | 23 | 1.0000 | 0.9130 | 0.9545 |
+| **akiec** | 52 | 0.5312 | 0.6538 | 0.5862 |
+| **bcc** | 79 | 0.8571 | 0.6835 | 0.7606 |
+| **bkl** | 158 | 0.7073 | 0.5506 | 0.6192 |
+| **df** | 22 | 0.6364 | 0.6364 | 0.6364 |
+| **mel** | 170 | 0.4806 | 0.8000 | 0.6004 |
+| **nv** | 1000 | 0.9397 | 0.8730 | 0.9051 |
+| **vasc** | 22 | 0.9474 | 0.8182 | 0.8780 |
 
 ![Measured confusion matrix](./confusion_matrix_measured.png)
-*Measured confusion matrix, n=1525. Counts in parentheses, row-normalised shading.*
+*Measured confusion matrix, n=1503. Counts in parentheses, row-normalised shading.*
 
 Raw numbers: `docs/evaluation_results.json`. Reproduce with:
 
@@ -89,43 +96,59 @@ Raw numbers: `docs/evaluation_results.json`. Reproduce with:
 python scripts/evaluate_model.py --data-dir path/to/test_set
 ```
 
-#### Melanoma performance is the limiting factor
+#### Serving reproduces training, to within fp16
 
-Melanoma recall is **0.624** — around 38% of melanomas in the test set are
-missed. The confusion matrix shows most of that error going to `nv` (benign
-nevus). This is the dominant clinical risk in the system and no amount of
-interface polish changes it.
+The same checkpoint scored through the serving path (`backend/ml_engine.py`, CPU,
+float32) rather than the training notebook (CUDA, autocast float16):
 
-This configuration was chosen over higher-accuracy alternatives for that reason.
-Measured options on the same test set:
+| | notebook | serving |
+| :--- | ---: | ---: |
+| Accuracy | 0.8090 | 0.8097 |
+| Macro-F1 | 0.7123 | 0.7130 |
+| Melanoma recall | 0.8000 | 0.8000 |
 
-| Config | Accuracy | Macro-F1 | Melanoma recall | Melanoma F1 |
+Five of seven classes are identical to four decimal places; `bkl` and `nv` each
+move by one borderline image, which is what mixed-precision logits do to a
+decision rule comparing probabilities against fixed thresholds. Full output:
+`docs/evaluation_serving_check.json`.
+
+#### Melanoma performance
+
+Melanoma recall is **0.800** under the served rule, against 0.6471 at plain
+arg-max: the thresholds are what buy that, and the cost is melanoma precision of
+0.4806. The alert channel then surfaces **92.9%** of melanomas — flagging any scan
+whose `p(mel)` clears 0.10 regardless of which class wins — at a **23.6%** review
+rate.
+
+The system is deliberately tuned to over-call melanoma. A false alarm costs a
+review; a miss can cost a life. That is a clinical policy choice and should be
+signed off as one, not inherited from a threshold search.
+
+#### Historical: the previous served model
+
+The figures below describe the checkpoint served before September 2026, measured
+on an **image-level** split (n=1525). HAM10000 holds ~10015 images of ~7470
+lesions, so that split places other photographs of the same lesion on both sides
+of the train/test line, and every figure is optimistic by an unknown margin. They
+are kept for provenance and are **not comparable** to the numbers above.
+
+| Config (historical, image-level split) | Accuracy | Macro-F1 | Melanoma recall | Melanoma F1 |
 | :--- | ---: | ---: | ---: | ---: |
 | 300px softmax + margin | 0.8616 | 0.7668 | 0.5393 | 0.6316 |
-| **300px sigmoid + margin (shipped)** | **0.8505** | **0.7450** | **0.6236** | **0.6361** |
-| 224px + crop, sigmoid + margin (previous) | 0.8066 | 0.7116 | 0.6798 | 0.5641 |
+| 300px sigmoid + margin (was shipped) | 0.8505 | 0.7450 | 0.6236 | 0.6361 |
+| 224px + crop, sigmoid + margin | 0.8066 | 0.7116 | 0.6798 | 0.5641 |
 
-#### Threshold operating point
+When that model was re-scored on the current lesion-disjoint split it returned
+accuracy 0.9534 and macro-F1 0.9288 — *higher* than its own held-out numbers,
+which is only possible because it had trained on most of those images. There is
+no way to compare the two models fairly without its original split manifest,
+which was never recorded.
 
-The thresholds in `models/class_thresholds.json` were originally optimized on
-*softmax* probabilities with a different decision rule
-(`skin_cancer/scripts/optimize_thresholds.py`). They were re-fitted for the
-served pairing (sigmoid + margin rule) on the calibration split (n=997) and
-reported on the test split (n=1525):
+#### Historical: melanoma threshold sweep
 
-| Thresholds | Accuracy | Macro-F1 | Melanoma recall | Melanoma F1 |
-| :--- | ---: | ---: | ---: | ---: |
-| **Current (shipped)** | 0.8505 | 0.7450 | 0.6236 | **0.6361** |
-| Refit for macro-F1 | **0.8557** | **0.7551** | 0.5000 | 0.6075 |
-| Refit for melanoma recall | 0.8308 | 0.7367 | **0.6798** | 0.6111 |
-
-**No configuration dominates the current one.** The refit did not find free
-headroom; melanoma recall trades against accuracy monotonically. The shipped
-thresholds already sit on the efficient frontier and hold the best melanoma F1,
-so they were left unchanged.
-
-Sweeping the melanoma threshold alone (all others at the macro-F1 fit) maps the
-tradeoff, selected on calibration and reported on test:
+Measured on the **previous** model and the image-level split, kept because the
+shape of the tradeoff still holds. Sweeping the melanoma threshold alone (all
+others at the macro-F1 fit), selected on calibration and reported on test:
 
 | `mel` threshold | Accuracy | Melanoma recall | Melanoma F1 |
 | ---: | ---: | ---: | ---: |
@@ -154,11 +177,15 @@ macro-F1.
 
 #### On training curves
 
-Per-epoch loss/F1/accuracy curves are **not available**. The checkpoints store
-only a single epoch's metrics, and the training run kept no history log. They
-cannot be reconstructed after the fact, and figures previously shown here were
-generated from hardcoded exponentials rather than measured — they have been
-removed.
+Per-epoch curves for the **previous** checkpoint are not available: it stored only
+a single epoch's metrics and kept no history log. Figures once shown here were
+generated from hardcoded exponentials rather than measured, and were removed.
+
+The current notebook logs per-epoch loss, accuracy, macro-F1 and melanoma recall
+to `training_history.csv` and plots them, so this gap does not recur. The deployed
+checkpoint came from a resumed run that refitted only the decision layer, so its
+curves belong to the run that produced the weights rather than the one that
+produced the thresholds.
 
 #### A note on checkpoints
 
@@ -170,9 +197,12 @@ swapping checkpoints fails loudly rather than silently changing the network.
 
 ## Confidence calibration and the melanoma alert channel
 
-Two distinct problems: the model **misses melanomas** (recall 0.624) and it does so
-**confidently** (mean stated confidence on wrong answers 0.942). They have
-different fixes, and neither requires retraining.
+Two distinct problems: the model **misses melanomas**, and it does so
+**confidently**. They have different fixes, and neither requires retraining. The
+analysis below was carried out on the previous checkpoint, where arg-max melanoma
+recall was 0.624 and mean stated confidence on wrong answers was 0.942. The
+mechanism is unchanged, and the current model uses the same two devices — now
+fitted as a single pair.
 
 ### Why the alert channel works
 
@@ -181,11 +211,30 @@ probability — median p(mel) = 0.539 across the 67 missed cases. The recall cei
 imposed by the **argmax**, not by what the model knows: `nv` simply edges ahead.
 Flagging on p(mel) directly, independently of which class wins, recovers most of them.
 
-### Fitted values
+### Fitted values — current model
 
-Temperature is chosen on the calibration split (n=997) by minimising expected
-calibration error; the alert threshold is the lowest review rate reaching 90% melanoma
-sensitivity there. Both are reported on the held-out test split (n=1525).
+`temperature = 1.15`, `mel_alert_threshold = 0.10` in `models/calibration.json`,
+fitted on calib+val and reported on the lesion-disjoint test split (n=1503):
+
+| Measure | Value |
+| :--- | ---: |
+| Expected calibration error | 0.0337 |
+| Melanoma recall (served rule) | 0.8000 |
+| **Melanoma surfaced (prediction or alert)** | **0.9294** |
+| Cases flagged for review | 0.2356 |
+
+Temperature and thresholds are fitted **as a pair** and scored together, because
+they interact: temperature decides whether the alert channel can reach its
+sensitivity target at all, since flatter probabilities lift more melanomas over
+the alert cutoff. Selecting temperature on calibration error alone once produced a
+model whose alert channel could not reach 90% sensitivity at any threshold,
+leaving it inert — melanoma surfaced came out exactly equal to thresholded recall.
+
+### Fitted values — previous model, historical
+
+Temperature was chosen on the calibration split (n=997) by minimising expected
+calibration error; the alert threshold was the lowest review rate reaching 90%
+melanoma sensitivity there. Both reported on the image-level test split (n=1525).
 
 | Measure | Before | After |
 | :--- | ---: | ---: |
@@ -196,7 +245,7 @@ sensitivity there. Both are reported on the held-out test split (n=1525).
 | **Melanoma surfaced (argmax or alert)** | 0.8764 | **0.8989** |
 | Cases flagged for review | 0.2420 | 0.3051 |
 
-`temperature = 2.0`, `mel_alert_threshold = 0.45` in `models/calibration.json`.
+`temperature = 2.0`, `mel_alert_threshold = 0.45` — the values that model shipped with.
 
 Temperature scaling is not a trade here: accuracy rises slightly and melanoma recall is
 unchanged, because dividing the logits leaves most of the ordering intact. What changes
@@ -217,10 +266,16 @@ flagged. With no calibration file present, confidences are raw and the alert is 
 
 ### What this does not do
 
-Neither fix improves what the model actually knows. Melanoma recall by argmax is
-unchanged at 0.624, and the alert channel raises the review burden rather than the
-model's discrimination. A real improvement needs retraining — melanoma-weighted loss,
-more melanoma data, or a dedicated melanoma-versus-nevus head.
+Neither device improves what the model actually knows. Thresholds and the alert
+channel move the operating point along a fixed curve and raise the review burden;
+they do not add discrimination. On the current model, arg-max melanoma recall is
+0.6471 and the served rule lifts it to 0.8000 — bought entirely with melanoma
+precision, which sits at 0.4806.
+
+Real improvement needs the model: more melanoma data, higher input resolution, an
+ensemble, or a dedicated melanoma-versus-nevus head. The retraining that produced
+the current checkpoint already applies melanoma-weighted focal loss, so that lever
+is spent.
 
 ## Out-of-Distribution (OOD) Gatekeeper
 

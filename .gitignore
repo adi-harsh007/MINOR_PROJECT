@@ -49,3 +49,6 @@ desktop.ini
 *.zip
 *.tar.gz
 *.7z
+
+# Kaggle download staging (large checkpoints)
+NEW_MODEL/

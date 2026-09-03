@@ -41,7 +41,18 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data-root", default="D:/ML/skin_cancer",
-                    help="Training repository containing data/processed/test.csv")
+                    help="Repository containing data/processed/<split>.csv")
+    ap.add_argument("--manifest",
+                    help="A split_<name>.csv written by the training notebook "
+                         "(columns image_id, dx). Use this whenever the served "
+                         "model was trained on the notebook's splits: the old "
+                         "manifests describe a different partition, and images "
+                         "that were held out there may be TRAINING images for "
+                         "the current model.")
+    ap.add_argument("--image-root",
+                    help="Directory holding the HAM10000 .jpg files, for use "
+                         "with --manifest (the manifest's own paths point at "
+                         "wherever the notebook ran).")
     ap.add_argument("--per-class", type=int, default=3)
     ap.add_argument("--split", default="test", choices=["test", "calib", "val"],
                     help="Held-out split to draw from. Never use 'train'.")
@@ -54,16 +65,28 @@ def main():
     out_dir = os.path.join(root, "samples")
     os.makedirs(out_dir, exist_ok=True)
 
-    csv = os.path.join(args.data_root, "data", "processed", args.split + ".csv")
-    if not os.path.exists(csv):
-        raise SystemExit("Split manifest not found: " + csv)
-
-    df = pd.read_csv(csv)
-    df["path"] = df["image_path"].apply(
-        lambda p: os.path.join(args.data_root, str(p).replace(os.sep, "/")))
+    if args.manifest:
+        if not args.image_root:
+            raise SystemExit("--manifest requires --image-root")
+        csv = args.manifest
+        if not os.path.exists(csv):
+            raise SystemExit("Split manifest not found: " + csv)
+        df = pd.read_csv(csv)
+        df["path"] = df["image_id"].apply(
+            lambda i: os.path.join(args.image_root, str(i) + ".jpg"))
+        split_label = os.path.splitext(os.path.basename(csv))[0].replace("split_", "")
+    else:
+        csv = os.path.join(args.data_root, "data", "processed", args.split + ".csv")
+        if not os.path.exists(csv):
+            raise SystemExit("Split manifest not found: " + csv)
+        df = pd.read_csv(csv)
+        df["path"] = df["image_path"].apply(
+            lambda p: os.path.join(args.data_root, str(p).replace(os.sep, "/")))
+        split_label = args.split
     df = df[df["path"].apply(os.path.exists)]
     if df.empty:
-        raise SystemExit("No images from the manifest are present under " + args.data_root)
+        raise SystemExit("No images from the manifest are present under "
+                         + (args.image_root or args.data_root))
 
     # Drop any file this script wrote previously so re-runs don't accumulate.
     for name in os.listdir(out_dir):
@@ -79,7 +102,7 @@ def main():
         take = rows.head(args.per_class)
         if len(take) < args.per_class:
             print("  %s: only %d image(s) available in the %s split"
-                  % (cls, len(take), args.split))
+                  % (cls, len(take), split_label))
         for i, (_, row) in enumerate(take.iterrows(), 1):
             name = "%s_%d_%s.jpg" % (cls, i, row["image_id"])
             dest = os.path.join(out_dir, name)
@@ -94,7 +117,7 @@ def main():
         "Labelled dermoscopic images for exercising the classifier.",
         "",
         "**These are from the held-out `%s` split.** The model was not trained on them, so"
-        % args.split,
+        % split_label,
         "predictions here reflect real generalisation. They were selected by manifest order,",
         "**not** by whether the model classifies them correctly — a set curated on model",
         "success would look better than the model actually is.",

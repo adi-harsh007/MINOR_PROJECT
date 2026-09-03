@@ -6,8 +6,9 @@ provides Grad-CAM attribution, out-of-distribution rejection, and a local histor
 scans.
 
 It is **not a diagnostic device and not a substitute for examination by a qualified
-clinician.** Measured melanoma recall is 0.624 — roughly 38% of melanomas in the held-out
-test set are missed. See [Measured performance](#measured-performance).
+clinician.** Measured melanoma recall is 0.800 — one melanoma in five is missed by the
+prediction itself, and the alert channel surfaces 92.9% of them for review. See
+[Measured performance](#measured-performance).
 
 ---
 
@@ -220,19 +221,27 @@ gallery links to them.)
 
 ### Current behaviour on these samples
 
-Snapshot with the shipped configuration — **17 of 21 correct**, matching the 0.8505
-accuracy measured across the full test split:
+Measured with the deployed checkpoint — **13 of 21 correct**, melanoma **3/3**:
 
 | Ground truth | Correct | Notes |
 | :--- | :--- | :--- |
-| `akiec`, `bkl`, `nv`, `vasc` | 3/3 each | |
-| `bcc` | 2/3 | one read as `bkl` |
-| `df` | 2/3 | one read as `nv` |
-| `mel` | **1/3 by prediction, 2/3 surfaced** | the melanoma alert channel catches one the argmax misses |
+| `mel`, `nv`, `df` | 3/3, 3/3, 2/3 | every melanoma caught by the prediction itself |
+| `akiec` | 2/3 | one read as `df` |
+| `bkl` | 1/3 | one as `nv`, one as `akiec` |
+| `bcc` | 1/3 | two read as `nv` |
+| `vasc` | 1/3 | two read as `mel` — surfaced for review, so they fail safe |
 
-The melanoma row is the one that matters, and it is why the alert channel exists. Before
-temperature scaling the two missed melanomas were called benign nevus at 0.969 and 0.984
-confidence — confidently wrong, not uncertain.
+**Do not read 13/21 as accuracy.** This set is balanced three-per-class, while
+the real distribution is 66% `nv`; measured accuracy on the full 1503-image test
+split is 0.8090. Twenty-one images also carry enormous variance — the `bcc` and
+`vasc` rows here are worse than their measured test recalls (0.68 and 0.82). It
+is a smoke test that the serving path works end to end, not a metric.
+
+The melanoma row is the one that matters, and it is why the alert channel exists:
+all three melanomas are caught by the prediction itself, and the alert flags a
+further four cases (two `vasc`, one `df`, one `bkl`) for review. Over-calling
+melanoma on a vascular lesion is the direction this system is deliberately tuned
+to fail in.
 
 Regenerate or resize the set at any time:
 
@@ -267,24 +276,40 @@ and is applied in the frontend.
 
 ### Measured performance
 
-Measured on the full held-out HAM10000 test split (1525 images) with the served
-configuration — `models/latest.pt` at 300x300, sigmoid readout, per-class
-thresholds:
+Measured on a **lesion-disjoint** held-out split of HAM10000 (1503 images) with
+the served configuration — `models/latest.pt` at 300x300, softmax readout,
+temperature 1.15, per-class thresholds:
 
-- **Accuracy:** 0.8505   **Macro-F1:** 0.7450
-- **Melanoma recall: 0.624** — roughly 38% of melanomas are missed, most
-  of them misread as benign nevi.
+- **Accuracy:** 0.8090   **Macro-F1:** 0.7123   **ECE:** 0.0337
+- **Melanoma recall: 0.800** — 20% of melanomas are missed by the prediction;
+  the alert channel surfaces **92.9%** of them at a 23.6% review rate.
 
-Melanoma recall is the limiting factor and the dominant clinical risk. This
-system is a research prototype and is **not a substitute for examination by a
-qualified clinician.**
+| Class | Support | Precision | Recall | F1 |
+| :--- | ---: | ---: | ---: | ---: |
+| `akiec` | 52 | 0.5312 | 0.6538 | 0.5862 |
+| `bcc` | 79 | 0.8571 | 0.6835 | 0.7606 |
+| `bkl` | 158 | 0.7073 | 0.5506 | 0.6192 |
+| `df` | 22 | 0.6364 | 0.6364 | 0.6364 |
+| `mel` | 170 | 0.4806 | 0.8000 | 0.6004 |
+| `nv` | 1000 | 0.9397 | 0.8730 | 0.9051 |
+| `vasc` | 22 | 0.9474 | 0.8182 | 0.8780 |
 
-To mitigate this without retraining, a **melanoma alert channel** flags any scan whose
-melanoma probability clears a fitted threshold, whatever class wins the argmax. It
-surfaces **90% of melanomas** (against 62% from the prediction alone) at a
-31% review rate, and does not change the primary prediction. Confidence is also
-temperature-scaled, which cuts calibration error from 0.116 to 0.051. See
-[MODEL_DETAILS](docs/MODEL_DETAILS.md#confidence-calibration-and-the-melanoma-alert-channel).
+Melanoma precision is 0.48 by design: the decision rule deliberately over-calls
+melanoma, because a false alarm costs a review and a miss can cost a life. That
+choice is what makes 23.6% of scans reviewable, and it should be signed off as a
+clinical policy rather than inherited from a threshold search.
+
+**These numbers are not comparable to this project's earlier published figures**
+(accuracy 0.8505, macro-F1 0.7450, melanoma recall 0.624). Those were measured on
+an image-level split. HAM10000 holds ~10015 images of ~7470 lesions, so splitting
+by image puts other photographs of the same lesion on both sides of the
+train/test line and inflates every metric by an unknown margin. The figures above
+are lower on accuracy, far higher on melanoma recall, and honest. See
+[training/README.md](training/README.md) for why the two cannot be compared
+directly, and what happened when the old model was re-measured on this split.
+
+This system is a research prototype and is **not a substitute for examination by
+a qualified clinician.**
 
 To reproduce on a labelled hold-out set:
 
@@ -328,5 +353,5 @@ inherit the same restriction.
 licence before public redistribution.
 
 **This is a research prototype, not a medical device.** It has not been clinically
-validated. Measured melanoma recall is 0.624 — a confident output is not evidence of a
+validated. Measured melanoma recall is 0.800 — a confident output is not evidence of a
 benign lesion. See the disclaimer in [LICENSE](LICENSE).
