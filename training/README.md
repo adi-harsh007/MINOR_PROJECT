@@ -302,25 +302,79 @@ criteria on data it has never seen — and the incumbent's numbers treated as
 unverifiable. The cell now detects this case and says so instead of printing a
 table that looks authoritative.
 
+### Run 3_1 — 3 September 2026, Tesla T4, 29 of 35 epochs (early stop). **Failed the gate.**
+
+The rerun of run 3's recipe. The model reproduced; the decision layer fitted on
+top of it did not.
+
+| arg-max, test split | run 3 | run 3_1 |
+| :--- | ---: | ---: |
+| Accuracy | 0.8290 | 0.8244 |
+| Macro-F1 | 0.7226 | 0.7121 |
+| Melanoma recall | 0.6588 | 0.6471 |
+
+That is a reproduction, inside the variance quoted above. But after thresholding:
+macro-F1 **0.6904** (gate ≥ 0.70) and melanoma surfaced **0.8529** (gate ≥ 0.90),
+so the run was rejected. Two causes, both in the fitting that happens *after*
+training:
+
+8. **Pair selection was blind to a criterion the gate enforces.** Two pairs were
+   fitted: `T=1.00` (macro-F1 0.7219, ECE 0.0468, score 0.6985) and `T=1.30`
+   (0.7133, 0.0317, score 0.6974). It took the first by 0.001. But temperature
+   also decides whether the alert channel can reach its sensitivity target —
+   flatter probabilities lift more melanomas over the alert threshold. At
+   `T=1.00` no alert threshold reached 0.90 sensitivity, the search fell back to
+   0.50, and melanoma surfaced came out at 0.8529 — *exactly* equal to
+   thresholded recall, i.e. the channel contributed nothing. Run 3 chose `T=1.35`
+   and surfaced 0.9588.
+   *Fix:* pairs are now ranked in tiers — melanoma floor met, then alert target
+   reachable, then review rate within the gate — and only then by macro-F1 minus
+   half the ECE. A pair that cannot reach the target sensitivity loses to one
+   that can, whatever its ECE.
+
+9. **Seven thresholds fitted on 110 melanomas overfit.** Calib macro-F1 0.7219 →
+   test 0.6904, a three-point drop. Run 3 got 0.7405 → 0.7224 from the same
+   procedure; the difference between the two runs is threshold luck, not model
+   quality.
+   *Fix:* `CFG["fit_splits"]` — the decision layer is fitted on `calib + val`
+   (2537 images, 280 melanomas) rather than `calib` alone. `val` already chose
+   the checkpoint, so it is not virgin data and the fitted thresholds carry mild
+   optimism; that is the deliberate trade for roughly half the variance. The test
+   split is still touched exactly once and is still the number that counts.
+
+### Refitting without retraining
+
+`RESUME_FROM`: upload a `_best_*.pt` from an earlier run as a Kaggle dataset and
+the notebook finds it, skips training, and re-fits and re-measures the decision
+layer against those weights — about five minutes instead of an hour. The seed
+must match the run that produced the checkpoint, or the splits will not line up;
+the restore check catches that, which is what it is for.
+
 ## Status
 
-Run 3 showed the recipe clears the release gate, and its artefacts were then lost
-to an unsaved Kaggle session. **A rerun is needed to produce a deployable model,
-and the recipe is deliberately unchanged for it** — reproducing a known-good
-result is worth more than a speculative improvement, because a tweaked rerun that
-lands at 0.69 leaves you unable to say whether it was the tweak or run-to-run
-variance.
+Run 3 cleared the gate and its artefacts were lost; run 3_1 reproduced the model
+and was rejected by the decision layer fitted on top of it. The recipe is
+unchanged again — the two fixes above are both in the post-training fit, which is
+where both failures were.
 
-Expect close but not identical numbers: the splits are deterministic
-(`RandomState(42)`, same images in the same four splits), but `cudnn.benchmark`,
-the weighted sampler and mixup all draw from unseeded CUDA-side randomness.
-Macro-F1 within a point or two of 0.7224 is a reproduction; materially below 0.70
-is a signal worth investigating rather than shipping.
+The fastest way to a deployable model is a **resume run**: upload
+`NEW_MODEL/_best_20260903-043324.pt` (run 3_1's epoch-19 EMA weights, val
+macro-F1 0.7012, verified loadable) as a Kaggle dataset with the same seed, and
+the notebook refits and re-measures in about five minutes. If that clears the
+gate, the model is deployable without another hour of training. If it does not,
+the decision layer is not the whole story and a retrain is the next step.
 
-Run it as **Save Version → Save & Run All (Commit)**. Every cell was also
-executed end to end on CPU against a synthetic HAM10000 stand-in, and the
-threshold search validated on synthetic logits starting *below* the melanoma
-floor — the case that made run 2 degenerate.
+Expect from any rerun: the splits are deterministic (`RandomState(42)`, same
+images in the same four splits), but `cudnn.benchmark`, the weighted sampler and
+mixup all draw from unseeded CUDA-side randomness. Arg-max macro-F1 within a
+point or two of 0.72 is a reproduction.
+
+Both notebook paths — training from scratch, and resuming from an uploaded
+checkpoint — were executed end to end on CPU against a synthetic HAM10000
+stand-in. The threshold search was separately validated on synthetic logits
+starting *below* the melanoma floor, and the tiered pair selection was checked on
+the exact failure run 3_1 hit: a lower-ECE pair whose alert channel could not
+reach 0.90 sensitivity is now correctly rejected in favour of one that can.
 
 What is still unmeasured: performance on skin tones outside HAM10000's
 distribution (the brightness sweep is a crude proxy, not a substitute for a
