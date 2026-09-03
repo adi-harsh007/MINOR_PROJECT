@@ -9,9 +9,20 @@ into this repository.
 1. Upload the notebook to Kaggle (**Create → Notebook → File → Import**).
 2. **Settings → Accelerator → GPU** (P100 or T4).
 3. **+ Add Data →** search `skin-cancer-mnist-ham10000` and add it.
-4. Run all. Roughly 2–4 hours at 30 epochs; lower `CFG["epochs"]` for a smoke run.
+4. **Save Version → Save & Run All (Commit)** — not an interactive Run All.
+   Roughly an hour at 35 epochs on a T4.
 
-Outputs land in `/kaggle/working` and are downloadable from the Output panel.
+Kaggle deletes `/kaggle/working` when an unsaved interactive session ends, and
+closing the browser tab is enough to end one. Run 3 was lost that way: a model
+that passed the release gate, with no way to recover the weights. A commit run
+executes on Kaggle's side and keeps its output as a permanent version. The final
+cell lists every artifact with a checksum and, in an interactive session, says
+loudly that nothing is saved yet.
+
+To refit the decision layer without retraining, upload a `_best_*.pt` from an
+earlier run as a dataset — the notebook finds it, skips training, and re-measures
+in about five minutes. Use the same `CFG["seed"]`, or the splits will not match
+the ones that checkpoint was trained on.
 
 ## What it produces
 
@@ -72,16 +83,26 @@ the bundle back with `weights_only=True` on CPU and runs a forward pass.
 
 ## Deploying the result
 
+Download the whole Output panel — the thresholds and calibration are what make
+the checkpoint servable — then let the installer do it:
+
 ```bash
-cp dermascan_b3.pt         models/latest.pt
-cp class_thresholds.json   models/
-cp calibration.json        models/
-cp evaluation_results.json docs/
+python scripts/deploy_checkpoint.py --from-dir ./kaggle_run --dry-run
+python scripts/deploy_checkpoint.py --from-dir ./kaggle_run
 ```
 
-Set `MODEL_ARCH` in `.env` to match the bundle's `head` (`plain` or `multihead`)
-and `IMG_SIZE` to its `img_size`. The readout is picked up from
-`calibration.json` automatically.
+It re-fingerprints the weights against what the bundle claims, loads them
+strictly into the architecture `backend/model.py` actually builds, runs a CPU
+forward pass, checks `IMG_SIZE` and `MODEL_ARCH`, confirms the sidecars agree
+with the bundle, and re-checks the release gate before copying anything. Copying
+by hand is how the previous deployment ended up serving a network its published
+metrics did not describe. Every install backs up the live files;
+`--rollback <stamp>` restores them, and the March incumbent is already saved as
+`20260317-000000`.
+
+The readout comes from `calibration.json` automatically — a `READOUT` value in
+`.env` is only a fallback, and a stale one there will mislead whoever reads the
+config next.
 
 Then verify:
 
