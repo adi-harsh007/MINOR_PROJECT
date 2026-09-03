@@ -325,30 +325,77 @@ function setConsoleViewportImage(src) {
 
 // ─── Clinical Sample Library Engine ─────────────────────────────────────────
 // Reference cases served from the repository's own `samples/` directory
-// (HAM10000 / ISIC dermoscopic images, 600x450). Labels are sourced from the
-// training repository's split manifests (skin_cancer/data/processed/*.csv).
-// Do not add an entry here with a diagnosis you cannot source.
+// (HAM10000 dermoscopic images, 600x450), one per diagnostic class. Ground truth
+// and body site come from the HAM10000 metadata; every case is drawn from the
+// held-out test split of the partition the deployed model was trained under
+// (models/splits/split_test.csv), so none of them was a training image.
+//
+// Regenerate the files with:
+//   python scripts/build_test_samples.py --manifest models/splits/split_test.csv \
+//          --image-root path/to/ham10000
+// and update this list to match. Do not add an entry whose diagnosis you cannot
+// source from the manifest.
 const CLINICAL_SAMPLES = [
+    {
+        id: "sample-mel",
+        name: "Melanoma (MEL)",
+        site: "Back",
+        category: "Malignant",
+        desc: "Histopathology-confirmed melanoma, HAM10000 held-out test case",
+        url: "/samples/mel_1_ISIC_0026120.jpg"
+    },
+    {
+        id: "sample-bcc",
+        name: "Basal Cell Carcinoma (BCC)",
+        site: "Trunk",
+        category: "Malignant",
+        desc: "Histopathology-confirmed basal cell carcinoma",
+        url: "/samples/bcc_1_ISIC_0029230.jpg"
+    },
+    {
+        id: "sample-akiec",
+        name: "Actinic Keratosis (AKIEC)",
+        site: "Face",
+        category: "Pre-Malignant",
+        desc: "Histopathology-confirmed actinic keratosis / intraepithelial carcinoma",
+        url: "/samples/akiec_1_ISIC_0029659.jpg"
+    },
     {
         id: "sample-nv",
         name: "Melanocytic Nevus (NV)",
-        site: "Posterior Torso",
+        site: "Abdomen",
         category: "Benign",
-        desc: "Symmetrical benign nevomelanocytic mole (HAM10000)",
-        url: "/samples/nv.jpg"
+        desc: "Benign nevomelanocytic mole, confirmed by clinical follow-up",
+        url: "/samples/nv_1_ISIC_0032285.jpg"
     },
     {
-        id: "sample-isic-0024307",
-        name: "Melanocytic Nevus (ISIC_0024307)",
-        site: "Anterior Torso",
+        id: "sample-bkl",
+        name: "Benign Keratosis (BKL)",
+        site: "Upper Extremity",
         category: "Benign",
-        desc: "HAM10000 held-out test case, ground truth nv (data/processed/test.csv)",
-        url: "/samples/ISIC_0024307.jpg"
+        desc: "Histopathology-confirmed benign keratosis-like lesion",
+        url: "/samples/bkl_1_ISIC_0025915.jpg"
+    },
+    {
+        id: "sample-df",
+        name: "Dermatofibroma (DF)",
+        site: "Lower Extremity",
+        category: "Benign",
+        desc: "Histopathology-confirmed dermatofibroma",
+        url: "/samples/df_1_ISIC_0029760.jpg"
+    },
+    {
+        id: "sample-vasc",
+        name: "Vascular Lesion (VASC)",
+        site: "Back",
+        category: "Benign",
+        desc: "Histopathology-confirmed vascular lesion",
+        url: "/samples/vasc_1_ISIC_0029486.jpg"
     },
     {
         id: "sample-ood",
         name: "Non-Skin Control",
-        site: "Anterior Torso",
+        site: "Not applicable",
         category: "Control",
         desc: "Non-clinical image. Rejected only once the feature-space OOD stage is calibrated",
         url: "/samples/cat.jpg"

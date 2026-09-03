@@ -152,7 +152,6 @@ def main():
         "| File | Purpose |",
         "| :--- | :--- |",
         "| `cat.jpg` | Non-skin control. Should be **rejected** by the OOD gate, not classified. |",
-        "| `nv.jpg`, `ISIC_0024307.jpg` | Earlier reference images kept because the sample gallery links to them. |",
         "",
         "## Regenerating",
         "",

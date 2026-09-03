@@ -300,7 +300,7 @@ being rejected.
 The previous gate used absolute channel standard deviation (`avg_std`), which
 scales with brightness. Identical lesions rejected or accepted purely on how dark
 the image was — a direct bias against darker skin tones and underexposed
-captures. Measured on the repository's own sample images, `ISIC_0024307`
+captures. Measured on a HAM10000 image, `ISIC_0024307`
 darkened to 35% brightness was rejected as `too_uniform` while the identical
 lighter image passed. `rel_contrast` is constant across the same range
 (0.119 → 0.120).

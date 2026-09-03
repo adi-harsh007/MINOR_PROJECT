@@ -14,9 +14,16 @@ from PIL import Image, ImageEnhance
 from backend.ood import color_gate, compute_metrics
 
 
+# A real dermoscopic lesion from samples/. Named once so that regenerating the
+# sample set (scripts/build_test_samples.py) is a one-line change here rather
+# than a hunt through the suite - the previous fixture pointed at an image that
+# was removed when the samples were redrawn from the current split.
+LESION_SAMPLE = "nv_1_ISIC_0032285.jpg"
+
+
 @pytest.fixture(scope="module")
 def lesion(project_root):
-    return Image.open(os.path.join(project_root, "samples", "ISIC_0024307.jpg")).convert("RGB")
+    return Image.open(os.path.join(project_root, "samples", LESION_SAMPLE)).convert("RGB")
 
 
 def accepted(img):

@@ -434,8 +434,10 @@ def build():
         ("Clinical sample gallery",
          "Five Unsplash stock photographs labelled as melanoma, BCC, AKIEC and others. Real "
          "HAM10000 images sat unused in the repository and were never served.",
-         "Real dermoscopic images served from /samples, with labels sourced from the training "
-         "split manifests. ISIC_0024307 is confirmed ground-truth nv."),
+         "Real dermoscopic images served from /samples &mdash; one per diagnostic class plus "
+         "a non-skin control &mdash; with labels sourced from the split manifest in "
+         "models/splits/. Every case is from the held-out test split of the partition the "
+         "served model was trained under."),
         ("Submitted image",
          "If a sample image failed to fetch &mdash; likely, since the stock photos were "
          "cross-origin &mdash; the client hand-drew a brown ellipse on a skin-coloured canvas "
@@ -483,7 +485,7 @@ def build():
     st.append(para(
         "The gate keyed on absolute channel standard deviation, which <b>scales with "
         "brightness</b>. Identical lesions were accepted or rejected purely on how dark the "
-        "image was. Measured on the repository's own sample: ISIC_0024307 darkened to 35% "
+        "image was. Measured on a HAM10000 image, ISIC_0024307, darkened to 35% "
         "brightness was rejected as <font name='Mono' size='8.6'>too_uniform</font> while the "
         "same image at full brightness passed. That is a direct bias against darker skin "
         "tones, underexposure, and poor lighting."))

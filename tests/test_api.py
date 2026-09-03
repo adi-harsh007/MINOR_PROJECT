@@ -18,9 +18,16 @@ def upload(client, name, data, content_type="image/jpeg"):
     return client.post("/api/analyze", files={"file": (name, data, content_type)})
 
 
+# A real dermoscopic lesion from samples/. Named once so that regenerating the
+# sample set (scripts/build_test_samples.py) is a one-line change here rather
+# than a hunt through the suite - the previous fixture pointed at an image that
+# was removed when the samples were redrawn from the current split.
+LESION_SAMPLE = "nv_1_ISIC_0032285.jpg"
+
+
 @pytest.fixture(scope="session")
 def lesion(project_root):
-    return jpeg_bytes(Image.open(os.path.join(project_root, "samples", "ISIC_0024307.jpg")))
+    return jpeg_bytes(Image.open(os.path.join(project_root, "samples", LESION_SAMPLE)))
 
 
 # ── service ──────────────────────────────────────────────────────────────
@@ -50,7 +57,7 @@ def test_health_does_not_force_model_load(client):
 
 def test_index_and_samples_are_served(client):
     assert client.get("/").status_code == 200
-    assert client.get("/samples/nv.jpg").status_code == 200
+    assert client.get("/samples/" + LESION_SAMPLE).status_code == 200
 
 
 def test_favicon_is_no_content(client):

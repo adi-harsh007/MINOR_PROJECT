@@ -234,8 +234,9 @@ Two properties make these usable as an honest test:
   curated on model success would look better than the model is.
 
 `cat.jpg` is a non-skin control: it should be **rejected** by the OOD gate, not classified.
-(`nv.jpg` and `ISIC_0024307.jpg` are earlier reference images retained because the sample
-gallery links to them.)
+
+The in-app sample gallery (`frontend/js/app.js`) links to one image per class from this
+set plus the control, so it stays in step with whatever the served model was trained on.
 
 ### Current behaviour on these samples
 
