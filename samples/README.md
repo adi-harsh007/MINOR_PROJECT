@@ -3,7 +3,7 @@
 Labelled dermoscopic images for exercising the classifier.
 
 **These are from the held-out `test` split of the lesion-disjoint partition the
-deployed model was trained under** (`NEW_MODEL/NEW/split_test.csv`). The model was
+deployed model was trained under** (`models/splits/split_test.csv`). The model was
 not trained on them, so predictions here reflect real generalisation. Regenerate
 them whenever the served model changes to a different split — an earlier sample
 set became 15/21 *training* images the moment the split was redrawn, while still

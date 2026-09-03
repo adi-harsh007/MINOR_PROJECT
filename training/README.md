@@ -263,7 +263,7 @@ worth of noise.
 ### Run 3 — 3 September 2026, Tesla T4, 31 of 35 epochs (early stop). **Passed the gate; artefacts lost.**
 
 > The session was interactive and was closed without saving a version, so Kaggle
-> deleted `/kaggle/working`. The weights are unrecoverable — `TRAINED_FILE/Run3.ipynb`
+> deleted `/kaggle/working`. The weights are unrecoverable — `runs/Run3.ipynb`
 > keeps the printed metrics but not the 41 MB they describe. **The numbers below
 > are real measurements of a checkpoint that no longer exists**, and are kept as
 > the target a rerun should land near, not as the description of anything
@@ -379,7 +379,7 @@ unchanged again — the two fixes above are both in the post-training fit, which
 where both failures were.
 
 The fastest way to a deployable model is a **resume run**: upload
-`NEW_MODEL/_best_20260903-043324.pt` (run 3_1's epoch-19 EMA weights, val
+`models/checkpoints/_best_20260903-043324.pt` (run 3_1's epoch-19 EMA weights, val
 macro-F1 0.7012, verified loadable) as a Kaggle dataset with the same seed, and
 the notebook refits and re-measures in about five minutes. If that clears the
 gate, the model is deployable without another hour of training. If it does not,

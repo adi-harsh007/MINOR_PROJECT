@@ -16,8 +16,15 @@ ENV/
 node_modules/
 
 # Models & Heavy Binaries
+# Checkpoints anywhere under models/, not just at the top level: models/backup/
+# holds a 123 MB rollback copy per deployment, and an unqualified `git add -A`
+# would otherwise commit every one of them.
+models/**/*.pt
+models/**/*.bin
 models/*.pt
 models/*.bin
+models/backup/
+models/checkpoints/
 models/*.onnx
 models/*.h5
 models/*.ckpt
@@ -50,5 +57,5 @@ desktop.ini
 *.tar.gz
 *.7z
 
-# Kaggle download staging (large checkpoints)
-NEW_MODEL/
+# Training checkpoints kept for resume runs (weights live in models/latest.pt)
+models/checkpoints/

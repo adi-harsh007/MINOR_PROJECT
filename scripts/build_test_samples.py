@@ -43,7 +43,8 @@ def main():
     ap.add_argument("--data-root", default="D:/ML/skin_cancer",
                     help="Repository containing data/processed/<split>.csv")
     ap.add_argument("--manifest",
-                    help="A split_<name>.csv written by the training notebook "
+                    help="A split_<name>.csv written by the training notebook, "
+                         "e.g. models/splits/split_test.csv. "
                          "(columns image_id, dx). Use this whenever the served "
                          "model was trained on the notebook's splits: the old "
                          "manifests describe a different partition, and images "

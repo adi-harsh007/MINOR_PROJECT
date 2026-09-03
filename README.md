@@ -10,6 +10,11 @@ clinician.** Measured melanoma recall is 0.800 — one melanoma in five is misse
 prediction itself, and the alert channel surfaces 92.9% of them for review. See
 [Measured performance](#measured-performance).
 
+**Deployed model:** EfficientNet-B3, run `20260903-043324`, fingerprint
+`27629fd06174b38f` — accuracy 0.8090, macro-F1 0.7123, melanoma recall 0.800 on a
+lesion-disjoint held-out split. [models/README.md](models/README.md) is the single
+source of truth for what is running, how to replace it, and how to roll back.
+
 ---
 
 ## 📁 Project Architecture & Directory Structure
@@ -30,9 +35,14 @@ MODEL_Skin-Cancer/
 │   ├── index.html              # UI layout, viewport, diagnostic views
 │   └── js/
 │       └── app.js              # View router, heatmap renderer, API client
-├── models/                     # gitignored
-│   ├── latest.pt               # EfficientNet-B3 weights (123 MB)
-│   └── class_thresholds.json   # Per-class decision thresholds
+├── models/
+│   ├── README.md               # WHAT IS DEPLOYED — start here
+│   ├── latest.pt               # Served EfficientNet-B3 bundle (41 MB, gitignored)
+│   ├── class_thresholds.json   # Per-class decision thresholds
+│   ├── calibration.json        # Temperature, melanoma alert threshold, readout
+│   ├── splits/                 # The lesion-disjoint partition this model was trained under
+│   ├── checkpoints/            # Raw weights for resuming a run (gitignored)
+│   └── backup/                 # Previous deployments, for rollback (gitignored)
 ├── data/                       # gitignored
 │   ├── pathology.db            # SQLite diagnostic history
 │   └── uploads/                # Stored lesion images
@@ -41,18 +51,23 @@ MODEL_Skin-Cancer/
 │   ├── PROJECT_ARCHITECTURE.md # Stack, request flow, API surface
 │   ├── FEATURE_STATUS.md       # What the UI actually implements
 │   ├── evaluation_results.json # Raw measured test-set metrics
+│   ├── evaluation_serving_check.json  # The same model scored through the serving path
 │   ├── confusion_matrix_measured.png
 │   ├── class_samples_real.png  # Real HAM10000 example per class
 │   └── DermaScan_Serving_Audit.pdf
 ├── samples/                    # 21 labelled test images (3/class) + a non-skin control
 ├── scripts/
+│   ├── deploy_checkpoint.py    # Verify and install a training bundle; rollback
 │   ├── evaluate_model.py       # Measure performance on a labelled hold-out set
+│   ├── build_test_samples.py   # Refresh samples/ from a split manifest
 │   ├── optimize_thresholds.py  # Fit thresholds to the served configuration
 │   ├── calibrate_ood.py        # Fit the OOD gate to real data
 │   ├── build_class_samples.py  # Build the class figure from real images
 │   └── build_audit_pdf.py      # Build the audit PDF
 ├── training/
-│   └── kaggle_train_dermascan.ipynb  # GPU retraining -> CPU-ready bundle
+│   ├── kaggle_train_dermascan.ipynb  # GPU retraining -> CPU-ready bundle
+│   ├── README.md               # The recipe, and the run history behind it
+│   └── runs/                   # Executed notebooks kept as run records
 ├── tests/                      # pytest suite (runs against a temp database)
 ├── LICENSE                     # MIT (code) + third-party data terms
 ├── pytest.ini
@@ -196,13 +211,13 @@ exercising the classifier without hunting for data.
 
 | Code | Diagnosis | Risk | Files | Example |
 | :--- | :--- | :--- | ---: | :--- |
-| `akiec` | Actinic keratosis / intraepithelial carcinoma | Pre-malignant | 3 | `akiec_1_ISIC_0024450.jpg` |
-| `bcc` | Basal cell carcinoma | Malignant | 3 | `bcc_1_ISIC_0024332.jpg` |
-| `bkl` | Benign keratosis | Benign | 3 | `bkl_1_ISIC_0024336.jpg` |
-| `df` | Dermatofibroma | Benign | 3 | `df_1_ISIC_0024386.jpg` |
-| `mel` | Melanoma | Malignant | 3 | `mel_1_ISIC_0024310.jpg` |
-| `nv` | Melanocytic nevus | Benign | 3 | `nv_1_ISIC_0024307.jpg` |
-| `vasc` | Vascular lesion | Benign | 3 | `vasc_1_ISIC_0024669.jpg` |
+| `akiec` | Actinic keratosis / intraepithelial carcinoma | Pre-malignant | 3 | `akiec_1_ISIC_0029659.jpg` |
+| `bcc` | Basal cell carcinoma | Malignant | 3 | `bcc_1_ISIC_0029230.jpg` |
+| `bkl` | Benign keratosis | Benign | 3 | `bkl_1_ISIC_0025915.jpg` |
+| `df` | Dermatofibroma | Benign | 3 | `df_1_ISIC_0029760.jpg` |
+| `mel` | Melanoma | Malignant | 3 | `mel_1_ISIC_0026120.jpg` |
+| `nv` | Melanocytic nevus | Benign | 3 | `nv_1_ISIC_0032285.jpg` |
+| `vasc` | Vascular lesion | Benign | 3 | `vasc_1_ISIC_0029486.jpg` |
 
 Naming is `<class>_<n>_<ISIC id>.jpg`, so the ground truth is visible in the filename and
 every image traces back to its dataset row. All filenames were verified against the split
@@ -210,8 +225,11 @@ manifest.
 
 Two properties make these usable as an honest test:
 
-- **They come from the held-out test split.** The model never trained on them, so results
-  reflect real generalisation rather than memorisation.
+- **They come from the held-out test split of the partition the deployed model was
+  trained under** (`models/splits/split_test.csv`). The model never trained on them, so
+  results reflect real generalisation rather than memorisation. Regenerate them whenever
+  the served model changes: `python scripts/build_test_samples.py --manifest
+  models/splits/split_test.csv --image-root path/to/ham10000`.
 - **They were selected by manifest order, not by what the model gets right.** A sample set
   curated on model success would look better than the model is.
 
