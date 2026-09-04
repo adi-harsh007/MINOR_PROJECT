@@ -29,7 +29,10 @@ const state = {
     history: [],
     // The two records the comparison view is showing, plus a slot id parked by
     // the results view on its way here.
-    compare: { a: null, b: null, pendingA: null }
+    compare: { a: null, b: null, pendingA: null },
+    modelCard: null,
+    cases: null,
+    compareCase: null
 };
 
 // ─── Pathology Class Descriptions & Codes ───────────────────────────────────
@@ -217,6 +220,8 @@ function navigate(viewId, payload = null) {
         loadAnalyticsData();
     } else if (viewId === "view-compare") {
         loadCompareRecords();
+    } else if (viewId === "view-model") {
+        loadModelCard();
     } else if (viewId === "view-results" && payload) {
         renderResultsView(payload);
     }
@@ -725,6 +730,13 @@ async function runAnalysis() {
         
         formData.append("site", state.selectedAnatomicSite);
 
+        // Free text, so it is normalised server-side; sending it raw keeps one
+        // definition of what a label may be.
+        const caseInput = document.getElementById("input-case-label");
+        if (caseInput && caseInput.value.trim()) {
+            formData.append("case", caseInput.value.trim());
+        }
+
         const result = await apiCall("/analyze", {
             method: "POST",
             body: formData
@@ -743,6 +755,7 @@ async function runAnalysis() {
         }
 
         state.latestResult = result;
+        if (result.case_label) loadCases(true);
 
         // Transition to Diagnostic Results view
         navigate("view-results", result);
@@ -1293,7 +1306,7 @@ async function loadAnalyticsData() {
 
     historyTableBody.innerHTML = `
         <tr>
-            <td colspan="6" class="py-14 text-center text-on-surface-muted text-[13px]">
+            <td colspan="7" class="py-14 text-center text-on-surface-muted text-[13px]">
                 <span class="material-symbols-outlined animate-spin text-[22px] block mb-2">progress_activity</span>
                 Loading records&hellip;
             </td>
@@ -1334,7 +1347,7 @@ function renderHistoryTable(records) {
     if (!records.length) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="py-14 text-center text-on-surface-muted">
+                <td colspan="7" class="py-14 text-center text-on-surface-muted">
                     <span class="material-symbols-outlined text-[28px] block mb-2">inbox</span>
                     <p class="text-[14px] text-on-surface-variant">No scans recorded yet</p>
                     <p class="text-[13px] mt-1">Run one from the scan console and it will appear here.</p>
@@ -1361,6 +1374,7 @@ function renderHistoryTable(records) {
             <tr class="border-b border-outline-variant hover:bg-surface-container transition-colors">
                 <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-muted">#${log.id}</td>
                 <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-variant tabular">${dateStr} <span class="text-on-surface-muted">${timeStr}</span></td>
+                ${caseCellMarkup(log)}
                 <td class="py-3 px-5 text-[13px] text-on-surface">${meta.name} <span class="font-data-sm text-[12px] text-on-surface-muted">${log.prediction.toUpperCase()}</span></td>
                 <td class="py-3 px-5 font-data-sm text-[13px] tabular text-right ${isHigh ? 'text-risk-high' : 'text-on-surface'}">${confPct}%</td>
                 <td class="py-3 px-5">
@@ -1473,6 +1487,177 @@ function exportHistoryCSV() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Cases
+
+   A case is a lesion the operator is tracking: scans sharing a label. There is
+   no cases table — the label lives on the scan, so nothing can be orphaned and
+   there is no second source of truth.
+
+   The label is the only thing in this application that connects two scans, and
+   it connects them *because someone said so*. Everything built on it attributes
+   it accordingly: the comparison view says you filed these together, never that
+   the system determined they match, and grouping still licenses no claim about
+   change in the lesion.
+
+   Note on escaping: case labels are the one piece of free text this UI renders.
+   Everything else interpolated into innerHTML is a server-constrained enum or a
+   number. Every insertion point below goes through escapeHtml().
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+async function loadCases(force = false) {
+    if (!force && state.cases) return state.cases;
+    try {
+        state.cases = await apiCall("/cases");
+    } catch (err) {
+        state.cases = [];
+        toast("Could not load cases: " + err.message, "error");
+    }
+    renderCaseSuggestions();
+    return state.cases;
+}
+
+// Feeds the console's datalist, so an existing lesion is picked rather than
+// retyped into a near-miss that silently splits its history in two.
+function renderCaseSuggestions() {
+    const list = document.getElementById("case-label-suggestions");
+    if (!list) return;
+    list.innerHTML = (state.cases || [])
+        .map(c => `<option value="${escapeHtml(c.case_label)}"></option>`).join("");
+}
+
+async function setCaseLabel(sessionId, label) {
+    const body = await apiCall(`/history/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_label: label }),
+    });
+
+    // Keep the cached row in step so the table does not have to be refetched.
+    const row = (state.history || []).find(r => r.id === body.id);
+    if (row) row.case_label = body.case_label;
+
+    // The set of cases may have gained or lost one.
+    await loadCases(true);
+    return body;
+}
+
+// Swap the cell for an input. Deliberately inline rather than a modal: labelling
+// is done in bulk while reading down the table, and a dialog per row makes that
+// a chore nobody completes.
+function beginCaseEdit(cell, sessionId, current) {
+    if (cell.dataset.editing === "true") return;
+    cell.dataset.editing = "true";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "input w-full";
+    input.maxLength = 64;
+    input.value = current || "";
+    input.setAttribute("aria-label", `Case label for scan ${sessionId}`);
+    input.setAttribute("list", "case-label-suggestions");
+
+    cell.innerHTML = "";
+    cell.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+        if (settled) return;
+        settled = true;
+        cell.dataset.editing = "false";
+
+        if (!commit) {
+            renderHistoryTable(state.history);
+            return;
+        }
+        const next = input.value.trim();
+        if (next === (current || "")) {
+            renderHistoryTable(state.history);
+            return;
+        }
+        try {
+            await setCaseLabel(sessionId, next || null);
+            toast(next ? `Filed under “${next}”` : "Case label cleared", "success");
+        } catch (err) {
+            toast("Could not save the case label: " + err.message, "error");
+        }
+        renderHistoryTable(state.history);
+    };
+
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); finish(true); }
+        if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+}
+
+function caseCellMarkup(record) {
+    const label = record.case_label;
+    return `
+        <td class="py-3 px-5 case-cell" data-session-id="${record.id}">
+            <button type="button" class="case-edit-btn text-left text-[13px] rounded px-1.5 -mx-1.5 py-0.5 transition-colors ${
+                label ? "text-on-surface hover:bg-surface-container-high"
+                      : "text-on-surface-muted hover:text-on-surface hover:bg-surface-container-high"
+            }" title="${label ? "Change the case label" : "Assign a case label"}">${
+                label ? escapeHtml(label) : "+ Add"
+            }</button>
+        </td>`;
+}
+
+// ── Compare: choosing scans within one case ─────────────────────────────────
+
+function renderCompareCaseFilter() {
+    const select = document.getElementById("compare-case-filter");
+    if (!select) return;
+    const chosen = select.value;
+    select.innerHTML = `<option value="">All scans</option>` +
+        (state.cases || []).map(c =>
+            `<option value="${escapeHtml(c.case_label)}">${escapeHtml(c.case_label)} · ${
+                c.scan_count} scan${c.scan_count === 1 ? "" : "s"}</option>`).join("");
+    if (chosen && (state.cases || []).some(c => c.case_label === chosen)) {
+        select.value = chosen;
+    }
+}
+
+// Picking a case answers the question the pickers otherwise leave open: which
+// two of its scans? Oldest and newest is the pair anyone comparing a tracked
+// lesion wants, so it is chosen for them and remains changeable.
+async function applyCompareCaseFilter(label) {
+    state.compareCase = label || null;
+    populateCompareSelectors();
+
+    const hint = document.getElementById("compare-case-hint");
+    if (!label) {
+        if (hint) hint.textContent =
+            "Pick a case to narrow both lists to its scans, oldest and newest preselected.";
+        return;
+    }
+
+    const scans = (state.history || [])
+        .filter(r => r.case_label === label)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    if (hint) {
+        hint.textContent = scans.length < 2
+            ? `“${label}” has ${scans.length} scan. Two are needed to compare.`
+            : `“${label}”: ${scans.length} scans. Showing the oldest and the newest.`;
+    }
+
+    if (scans.length >= 2) {
+        const a = String(scans[0].id);
+        const b = String(scans[scans.length - 1].id);
+        const selectA = document.getElementById("compare-select-a");
+        const selectB = document.getElementById("compare-select-b");
+        if (selectA) selectA.value = a;
+        if (selectB) selectB.value = b;
+        await setCompareSlot("A", a);
+        await setCompareSlot("B", b);
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Compare view
 
    Two recorded scans, chosen from history. The previous version accepted loose
@@ -1539,19 +1724,27 @@ function formatRecordedAt(iso) {
 
 function compareOptionLabel(rec) {
     const meta = PATHOLOGY_META[rec.prediction] || { name: rec.prediction };
-    return `#${rec.id} · ${meta.name} · ${formatPct(rec.confidence)} · ${formatRecordedAt(rec.created_at)}`;
+    // The case is redundant once the list is filtered to one.
+    const caseBit = (!state.compareCase && rec.case_label) ? ` · ${rec.case_label}` : "";
+    return `#${rec.id} · ${meta.name} · ${formatPct(rec.confidence)} · ` +
+           `${formatRecordedAt(rec.created_at)}${caseBit}`;
 }
 
 // Populate both pickers from whatever history is loaded, keeping any selection
 // the user has already made.
 function populateCompareSelectors() {
-    const records = state.history || [];
+    let records = state.history || [];
+    if (state.compareCase) {
+        records = records
+            .filter(r => r.case_label === state.compareCase)
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
     ["A", "B"].forEach(slot => {
         const select = document.getElementById(`compare-select-${slot.toLowerCase()}`);
         if (!select) return;
         const chosen = select.value;
         select.innerHTML = `<option value="">Select a recorded scan…</option>` +
-            records.map(r => `<option value="${r.id}">${compareOptionLabel(r)}</option>`).join("");
+            records.map(r => `<option value="${r.id}">${escapeHtml(compareOptionLabel(r))}</option>`).join("");
         if (chosen && records.some(r => String(r.id) === String(chosen))) {
             select.value = chosen;
         }
@@ -1567,6 +1760,12 @@ async function loadCompareRecords(force = false) {
             return;
         }
     }
+    // Always refetched, never reused from the page load: scan counts move with
+    // every analysis, and a filter reading "1 scan" beside a hint reading "3"
+    // is worse than one extra query. It also aggregates over every record,
+    // where state.history stops at the list limit.
+    await loadCases(true);
+    renderCompareCaseFilter();
     populateCompareSelectors();
 
     // A scan that has just finished is the one you want in slot A.
@@ -1696,6 +1895,34 @@ function renderCompareSummary(a, b) {
     const siteA = a.anatomic_site || "Not recorded";
     const siteB = b.anatomic_site || "Not recorded";
     set("compare-site", siteA === siteB ? siteA : `A: ${siteA} · B: ${siteB}`);
+
+    const sameCase = Boolean(a.case_label) && a.case_label === b.case_label;
+    if (sameCase) {
+        set("compare-case", a.case_label);
+        set("compare-case-detail", "Both scans filed here");
+    } else if (a.case_label || b.case_label) {
+        set("compare-case", "Different");
+        set("compare-case-detail",
+            `A: ${a.case_label || "unfiled"} · B: ${b.case_label || "unfiled"}`);
+    } else {
+        set("compare-case", "Unfiled");
+        set("compare-case-detail", "Neither scan has a case label");
+    }
+
+    // Grouping changes who is making the claim, and nothing else. It never
+    // licenses a statement about the lesion changing: the application still
+    // measures nothing, and that half of the notice is identical either way.
+    const note = document.getElementById("compare-identity-note");
+    if (note) {
+        note.innerHTML = sameCase
+            ? `<span class="font-semibold text-on-surface">You have filed both scans under ` +
+              `“${escapeHtml(a.case_label)}”.</span> That is your assertion that they show the same ` +
+              `lesion — the application did not determine it and cannot check it. Read in that order, ` +
+              `A is the earlier record and B the later one.`
+            : `<span class="font-semibold text-on-surface">These are two independent inferences.</span> ` +
+              `Neither scan is filed with the other under a case label, so nothing here indicates they ` +
+              `show the same lesion. Assign a case in History if they do.`;
+    }
 }
 
 function renderCompareClassTable(a, b) {
@@ -1759,15 +1986,16 @@ function renderCompareDetailTable(a, b) {
         ["Melanoma alert", yesNo(a.melanoma_alert), yesNo(b.melanoma_alert)],
         ["p(melanoma)", formatPct(a.melanoma_probability), formatPct(b.melanoma_probability)],
         ["Decision threshold", num(a.threshold_used, 3), num(b.threshold_used, 3)],
+        ["Case", a.case_label || "Unfiled", b.case_label || "Unfiled"],
         ["Anatomic site", a.anatomic_site || "Not recorded", b.anatomic_site || "Not recorded"],
         ["Image retained", yesNo(a.has_image), yesNo(b.has_image)],
     ];
 
     tbody.innerHTML = rows.map(([field, va, vb]) => `
         <tr class="border-b border-outline-variant/60">
-            <td class="py-2.5 pr-4 text-[13px] text-on-surface-variant">${field}</td>
-            <td class="py-2.5 px-3 text-[13px] text-on-surface">${va}</td>
-            <td class="py-2.5 px-3 text-[13px] text-on-surface">${vb}</td>
+            <td class="py-2.5 pr-4 text-[13px] text-on-surface-variant">${escapeHtml(field)}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${escapeHtml(va)}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${escapeHtml(vb)}</td>
         </tr>
     `).join("");
 }
@@ -1792,6 +2020,14 @@ function renderCompare() {
         content.classList.add("flex");
     }
 
+    // Only reorder within a case, where chronology is meaningful; two unrelated
+    // scans have no natural order and swapping them would fight the user.
+    if (a.case_label && a.case_label === b.case_label
+            && new Date(a.created_at) > new Date(b.created_at)) {
+        [state.compare.a, state.compare.b] = [b, a];
+        return renderCompare();
+    }
+
     renderCompareHeader("A", a);
     renderCompareHeader("B", b);
     renderCompareImage("A", a);
@@ -1800,6 +2036,357 @@ function renderCompare() {
     renderCompareClassTable(a, b);
     renderCompareDetailTable(a, b);
     applyCompareZoom();
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Model card
+
+   Reads /api/model, which reads files. Nothing here computes a metric — the
+   client formats percentages and derives the "one in N" gloss, and that is all.
+   Where the server reports an artifact as unavailable this says so, because the
+   alternative on a page whose whole point is honest measurement is worse than a
+   blank.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const MODEL_CARD_CLASS_ORDER = ["mel", "bcc", "akiec", "nv", "bkl", "df", "vasc"];
+
+function mcPct(value, digits = 1) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    return `${(value * 100).toFixed(digits)}%`;
+}
+
+function mcNum(value, digits = 3) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    return value.toFixed(digits);
+}
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+// Does the recorded evaluation describe the configuration actually running?
+// Printing measured figures beside a model they were not measured on would make
+// this page worse than having none, so the answer leads the page.
+function renderModelProvenance(card) {
+    const box = document.getElementById("model-provenance");
+    const icon = document.getElementById("model-provenance-icon");
+    const text = document.getElementById("model-provenance-text");
+    if (!box || !icon || !text) return;
+
+    const base = "px-4 py-3 rounded-xl border flex items-start gap-3";
+    const iconBase = "material-symbols-outlined text-[22px] shrink-0";
+
+    if (!card.evaluation_available) {
+        box.className = `${base} border-risk-mid/45 bg-risk-mid/10`;
+        icon.className = `${iconBase} text-risk-mid`;
+        icon.textContent = "warning";
+        text.textContent =
+            "No recorded evaluation is available to this server, so the figures below cannot be " +
+            "shown. The serving configuration is still reported.";
+        return;
+    }
+
+    if (card.evaluation_describes_this_configuration === true) {
+        box.className = `${base} border-risk-low/45 bg-risk-low/10`;
+        icon.className = `${iconBase} text-risk-low`;
+        icon.textContent = "check_circle";
+        text.textContent =
+            "These figures were measured under the same per-class decision thresholds this server " +
+            "is using, so they describe the configuration you are running.";
+        return;
+    }
+
+    if (card.evaluation_describes_this_configuration === false) {
+        const differing = (card.evaluation_threshold_mismatches || [])
+            .map(m => `${m.class.toUpperCase()} ${m.evaluated_with} → ${m.serving}`).join(", ");
+        box.className = `${base} border-risk-high/45 bg-risk-high/10`;
+        icon.className = `${iconBase} text-risk-high`;
+        icon.textContent = "error";
+        text.textContent =
+            "The recorded evaluation was measured under different decision thresholds from the ones " +
+            `this server is using (${differing}). The figures below do not describe this ` +
+            "configuration and should not be quoted for it.";
+        return;
+    }
+
+    box.className = `${base} border-outline-variant bg-surface-container`;
+    icon.className = `${iconBase} text-on-surface-variant`;
+    icon.textContent = "help";
+    text.textContent =
+        "Whether these figures describe the running configuration could not be established: the " +
+        "server has the evaluation but not the record of which thresholds it was measured under.";
+}
+
+// Can the thresholds in use be traced to the tool that is supposed to produce
+// them? The answer conditions every figure on this page, so it sits above them.
+function renderModelThresholdProvenance(card) {
+    const p = card.threshold_provenance || {};
+    const badge = document.getElementById("model-provenance-badge");
+    const body = document.getElementById("model-provenance-body");
+    const fields = document.getElementById("model-provenance-fields");
+    if (!badge || !body || !fields) return;
+
+    if (p.produced_by_pipeline && p.splits_shown_separate) {
+        badge.className = "chip chip--low";
+        badge.textContent = "Traceable";
+        body.textContent =
+            `Written by scripts/optimize_thresholds.py, fitted on ${p.fitted_on} and ` +
+            `reported on ${p.reported_on} — separate splits, as that tool requires.`;
+        fields.textContent = "";
+        return;
+    }
+
+    badge.className = "chip chip--mid";
+    badge.textContent = "Unverifiable";
+    body.textContent = p.readable
+        ? "This file was not written by scripts/optimize_thresholds.py, so that command " +
+          "will not reproduce it — and it records no `reported_on`, which is the field " +
+          "showing the thresholds were scored on a split separate from the one they were " +
+          "tuned on. That separation may well have been kept; nothing here can confirm it, " +
+          "so the figures below should be read as unverified rather than as measured under " +
+          "a known protocol."
+        : "The threshold file could not be read, so nothing about its provenance is known.";
+
+    const missing = p.missing_fields || [];
+    fields.textContent = missing.length
+        ? `Missing: ${missing.join(", ")}${p.fitted_on ? ` · fitted_on: ${p.fitted_on}` : ""}`
+        : "";
+}
+
+// The gate the console advertises on every scan. Its state belongs on the page
+// describing what this model is, not only in a per-scan panel.
+function renderModelOodState(card) {
+    const g = card.ood_gate || {};
+    const badge = document.getElementById("model-ood-badge");
+    const body = document.getElementById("model-ood-body");
+    if (!badge || !body) return;
+
+    const both = g.thresholds_fitted && g.feature_stage_fitted;
+    badge.className = "chip " + (both ? "chip--low" : "chip--mid");
+    badge.textContent = both ? "Fitted" : "Not fitted";
+
+    if (both) {
+        body.textContent =
+            "Colour thresholds fitted to data and the feature-space stage active. " +
+            "Both stages run on every scan.";
+        return;
+    }
+
+    const parts = [];
+    parts.push(g.thresholds_fitted
+        ? "Colour thresholds: fitted."
+        : "Colour thresholds: provisional defaults, never fitted.");
+    parts.push(g.feature_stage_fitted
+        ? "Feature-space stage: active."
+        : "Feature-space stage: never fitted, so it does not run at all.");
+    parts.push("Screening is therefore a colour heuristic on unfitted numbers: it " +
+               "rejects flat fields, pixel noise and non-skin hues, and cannot reject a " +
+               "photograph of another real object. Run scripts/calibrate_ood.py to fit it.");
+    body.textContent = parts.join(" ");
+}
+
+function renderModelHeadline(evaluation) {
+    if (!evaluation) {
+        ["model-accuracy", "model-macro-f1", "model-mel-recall", "model-ece"]
+            .forEach(id => setText(id, "—"));
+        setText("model-testset", "Evaluation unavailable");
+        setText("model-mel-recall-note", "—");
+        return;
+    }
+
+    setText("model-accuracy", mcPct(evaluation.accuracy));
+    setText("model-macro-f1", mcNum(evaluation.macro_f1));
+    setText("model-mel-recall", mcNum(evaluation.melanoma_recall));
+    setText("model-ece", mcNum(evaluation.ece));
+
+    setText("model-testset", typeof evaluation.test_set_size === "number"
+        ? `${evaluation.test_set_size.toLocaleString()} held-out images`
+        : "—");
+
+    const recall = evaluation.melanoma_recall;
+    if (typeof recall === "number" && recall < 0.995 && recall >= 0) {
+        const missed = Math.round(1 / (1 - recall));
+        setText("model-mel-recall-note", missed >= 2
+            ? `Roughly one melanoma in ${missed} missed by the prediction`
+            : "Missed by the prediction");
+    } else {
+        setText("model-mel-recall-note", "—");
+    }
+}
+
+function renderModelOperatingPoint(evaluation) {
+    const recall = evaluation && evaluation.melanoma_recall;
+    const surfaced = evaluation && evaluation.melanoma_surfaced;
+    const review = evaluation && evaluation.review_rate;
+
+    setText("model-op-recall", mcPct(recall));
+    setText("model-op-surfaced", mcPct(surfaced));
+    setText("model-op-review", mcPct(review));
+
+    if (typeof recall !== "number" || typeof surfaced !== "number") {
+        setText("model-op-prose", "Evaluation unavailable.");
+        return;
+    }
+
+    const missedByPrediction = 1 - recall;
+    const missedEntirely = 1 - surfaced;
+    const reviewText = typeof review === "number"
+        ? ` That costs a review rate of ${mcPct(review)} — about ${Math.round(review * 100)} scans in every 100 are put in front of a human.`
+        : "";
+
+    setText("model-op-prose",
+        `The prediction alone misses ${mcPct(missedByPrediction)} of melanomas. With the alert ` +
+        `channel included, ${mcPct(missedEntirely)} are missed entirely — that is the number a ` +
+        `patient would care about.${reviewText}`);
+}
+
+function renderModelPerClass(card) {
+    const tbody = document.getElementById("model-per-class");
+    if (!tbody) return;
+
+    const perClass = (card.evaluation && card.evaluation.per_class) || {};
+    const thresholds = card.thresholds || {};
+
+    tbody.innerHTML = MODEL_CARD_CLASS_ORDER.map(cls => {
+        const meta = PATHOLOGY_META[cls] || { name: cls.toUpperCase() };
+        const m = perClass[cls] || {};
+        const isHigh = HIGH_RISK_CLASSES.includes(cls);
+        return `
+            <tr class="border-b border-outline-variant/60">
+                <td class="py-3 px-5 ${isHigh ? 'border-l-2 border-l-risk-high/60' : ''}">
+                    <span class="text-[13px] text-on-surface">${meta.name}</span>
+                    <span class="font-data-sm text-[12px] text-on-surface-muted ml-1.5">${cls.toUpperCase()}</span>
+                </td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${
+                    typeof m.support === "number" ? m.support : "—"}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${
+                    typeof thresholds[cls] === "number" ? thresholds[cls].toFixed(2) : "—"}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${mcNum(m.precision)}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface">${mcNum(m.recall)}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${mcNum(m.f1)}</td>
+            </tr>`;
+    }).join("");
+}
+
+function renderModelConfusion(card) {
+    const table = document.getElementById("model-confusion");
+    if (!table) return;
+    const tbody = table.querySelector("tbody");
+
+    const matrix = card.evaluation && card.evaluation.confusion_matrix;
+    const classes = card.classes || [];
+
+    if (!Array.isArray(matrix) || !matrix.length) {
+        tbody.innerHTML =
+            `<tr><td class="py-6 text-[13px] text-on-surface-muted">Evaluation unavailable.</td></tr>`;
+        setText("model-confusion-note", "—");
+        return;
+    }
+
+    // Shade by share of the true-class row, not of the whole matrix: NV is 1000
+    // of 1503 images, so a global scale would render every other row blank.
+    const rowTotals = matrix.map(row => row.reduce((a, b) => a + b, 0));
+
+    const header = `
+        <tr>
+            <th class="label py-2 pr-3 text-left">True \\ Pred</th>
+            ${classes.map(c => `<th class="label py-2 px-2 text-center">${c.toUpperCase()}</th>`).join("")}
+            <th class="label py-2 pl-3 text-right">Total</th>
+        </tr>`;
+
+    const rows = matrix.map((row, i) => {
+        const total = rowTotals[i] || 1;
+        const cells = row.map((value, j) => {
+            const share = value / total;
+            const onDiagonal = i === j;
+            // Correct predictions read as presence, errors as a warning; an
+            // empty cell is left plain so the eye lands on real mistakes.
+            const bg = value === 0 ? "transparent"
+                : onDiagonal ? `rgba(111,192,164,${(0.10 + share * 0.55).toFixed(3)})`
+                             : `rgba(232,116,108,${(0.10 + share * 0.75).toFixed(3)})`;
+            const strong = value > 0 && share >= 0.08;
+            return `<td class="py-2 px-2 text-center font-data-sm text-[13px] tabular ${
+                strong ? "text-on-surface font-semibold" : "text-on-surface-variant"
+            }" style="background:${bg}" title="${classes[i].toUpperCase()} predicted as ${
+                classes[j].toUpperCase()}: ${value} of ${total}">${value}</td>`;
+        }).join("");
+        return `
+            <tr class="border-b border-outline-variant/40">
+                <td class="py-2 pr-3 text-[13px] text-on-surface whitespace-nowrap">${classes[i].toUpperCase()}</td>
+                ${cells}
+                <td class="py-2 pl-3 text-right font-data-sm text-[13px] tabular text-on-surface-muted">${rowTotals[i]}</td>
+            </tr>`;
+    }).join("");
+
+    tbody.innerHTML = header + rows;
+
+    // Name the single largest confusion rather than leaving the reader to hunt.
+    let worst = null;
+    matrix.forEach((row, i) => row.forEach((value, j) => {
+        if (i !== j && (!worst || value > worst.value)) worst = { i, j, value };
+    }));
+    if (worst && worst.value > 0) {
+        const trueName = (PATHOLOGY_META[classes[worst.i]] || {}).name || classes[worst.i];
+        const predName = (PATHOLOGY_META[classes[worst.j]] || {}).name || classes[worst.j];
+        const share = worst.value / (rowTotals[worst.i] || 1);
+        setText("model-confusion-note",
+            `Largest single confusion: ${worst.value} ${trueName} images predicted as ` +
+            `${predName} — ${mcPct(share)} of all ${trueName} in the set.`);
+    } else {
+        setText("model-confusion-note", "—");
+    }
+}
+
+function renderModelConfig(card) {
+    const tbody = document.getElementById("model-config");
+    if (!tbody) return;
+
+    const d = card.decision_layer || {};
+    const cp = card.checkpoint || {};
+    const rows = [
+        ["Backbone", `${card.backbone || "—"} (${card.architecture || "—"})`],
+        ["Input size", typeof card.input_size === "number" ? `${card.input_size} px` : "—"],
+        ["Training data", card.dataset || "—"],
+        ["Checkpoint", `${cp.name || "—"}${cp.present ? "" : " — not present on this server"}`],
+        ["Loaded", cp.loaded ? "Yes" : "Not yet — loads on the first scan"],
+        ["Readout", d.readout || "—"],
+        ["Temperature", mcNum(d.temperature, 2)],
+        ["Melanoma alert threshold", d.mel_alert_threshold != null ? mcNum(d.mel_alert_threshold, 2) : "Disabled"],
+        ["Decision layer calibrated", d.calibration_loaded ? "Yes" : "No — serving defaults"],
+        ["Thresholds fitted on", card.thresholds_fitted_on || "Not recorded"],
+    ];
+
+    tbody.innerHTML = rows.map(([k, v]) => `
+        <tr class="border-b border-outline-variant/60">
+            <td class="py-3 px-5 text-[13px] text-on-surface-variant w-1/3">${k}</td>
+            <td class="py-3 px-5 text-[13px] text-on-surface">${v}</td>
+        </tr>`).join("");
+}
+
+async function loadModelCard() {
+    let card;
+    try {
+        card = await apiCall("/model");
+    } catch (err) {
+        toast("Could not load the model card: " + err.message, "error");
+        return;
+    }
+    state.modelCard = card;
+
+    renderModelProvenance(card);
+    renderModelThresholdProvenance(card);
+    renderModelOodState(card);
+    renderModelHeadline(card.evaluation);
+    renderModelOperatingPoint(card.evaluation);
+    renderModelPerClass(card);
+    renderModelConfusion(card);
+    renderModelConfig(card);
+
+    setText("model-subtitle", card.evaluation && card.evaluation.test_set_size
+        ? `EfficientNet-B3 on HAM10000, measured on ${card.evaluation.test_set_size.toLocaleString()} held-out images.`
+        : "What this deployment serves, and what it measured.");
 }
 
 
@@ -1858,6 +2445,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 3. Populate Clinical Sample Gallery
     renderSampleGallery();
+
+    // Case labels already in use, for the console's suggestion list.
+    loadCases();
 
     // 4. Anatomic Site Tagger Buttons
     document.querySelectorAll(".anatomic-tag").forEach(tagBtn => {
@@ -1965,7 +2555,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const meta = PATHOLOGY_META[item.prediction] || { name: item.prediction };
                 return item.id.toString().includes(q) ||
                        item.prediction.toLowerCase().includes(q) ||
-                       meta.name.toLowerCase().includes(q);
+                       meta.name.toLowerCase().includes(q) ||
+                       (item.case_label || "").toLowerCase().includes(q);
             });
             renderHistoryTable(filtered);
         });
@@ -1974,6 +2565,31 @@ document.addEventListener("DOMContentLoaded", () => {
     // 11. CSV Export Button
     const btnExportCSV = document.getElementById("btn-export-csv");
     if (btnExportCSV) btnExportCSV.addEventListener("click", exportHistoryCSV);
+
+    // 11b. Model card
+    const btnModelRefresh = document.getElementById("btn-model-refresh");
+    if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelCard);
+
+    // 11c. Case filter on the comparison view.
+    const caseFilter = document.getElementById("compare-case-filter");
+    if (caseFilter) {
+        caseFilter.addEventListener("change", (e) => applyCompareCaseFilter(e.target.value));
+    }
+
+    // 11d. Inline case editing in the history table. Delegated, because the rows
+    //      are re-rendered on every search keystroke and every saved label.
+    const historyBody = document.getElementById("analytics-history-tbody");
+    if (historyBody) {
+        historyBody.addEventListener("click", (e) => {
+            const btn = e.target.closest(".case-edit-btn");
+            if (!btn) return;
+            const cell = btn.closest(".case-cell");
+            if (!cell) return;
+            const id = cell.getAttribute("data-session-id");
+            const record = (state.history || []).find(r => String(r.id) === String(id));
+            beginCaseEdit(cell, id, record ? record.case_label : "");
+        });
+    }
 
     // 12. Compare view
     const btnCompareRefresh = document.getElementById("btn-compare-refresh");

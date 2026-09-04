@@ -85,6 +85,58 @@ def read_threshold_file(threshold_path, classes):
     return thresholds, metrics, data.get('fitted_on')
 
 
+# Fields scripts/optimize_thresholds.py always writes. Their absence means the
+# threshold file came from somewhere else, and `python scripts/optimize_thresholds.py`
+# will not reproduce the artifact every served decision depends on.
+THRESHOLD_PIPELINE_FIELDS = ("fitted_on", "reported_on", "rule", "objective",
+                             "test_metrics")
+
+
+def threshold_provenance(threshold_path):
+    """Can the thresholds in use be traced to the tool that is meant to produce them?
+
+    optimize_thresholds.py exists to keep two splits apart - it fits on a
+    calibration split and reports on a held-out one, because "fitting and
+    reporting on the same images overstates performance". `reported_on` is the
+    field that records the second half of that, so a file missing it cannot show
+    the separation was kept, however plausible its numbers look.
+
+    This reports what is there; it does not guess. An unverifiable provenance is
+    not an accusation that the thresholds are overfitted - it is the statement
+    that nothing here can rule it out, which the model card then says out loud
+    rather than printing a confident-looking `fitted_on` string beside figures.
+    """
+    try:
+        with open(threshold_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return {
+            "readable": False,
+            "detail": str(e),
+            "produced_by_pipeline": False,
+            "missing_fields": list(THRESHOLD_PIPELINE_FIELDS),
+            "fitted_on": None,
+            "reported_on": None,
+            "splits_shown_separate": False,
+        }
+
+    missing = [f for f in THRESHOLD_PIPELINE_FIELDS if f not in data]
+    fitted_on = data.get("fitted_on")
+    reported_on = data.get("reported_on")
+    return {
+        "readable": True,
+        "produced_by_pipeline": not missing,
+        "missing_fields": missing,
+        "fitted_on": fitted_on,
+        "reported_on": reported_on,
+        # Both recorded, and different: the only state in which this file itself
+        # demonstrates that thresholds were not scored on the data they were
+        # tuned on.
+        "splits_shown_separate": bool(fitted_on and reported_on
+                                      and fitted_on != reported_on),
+    }
+
+
 class SkinCancerPredictor:
     def __init__(self, model_path=MODEL_PATH, threshold_path=THRESHOLD_PATH):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'

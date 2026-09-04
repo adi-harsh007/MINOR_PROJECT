@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from .config import UPLOAD_DIR
+from .config import UPLOAD_DIR, ALLOW_BULK_SWEEP
 from .logging_setup import get_logger
 
 log = get_logger("storage")
@@ -28,6 +28,19 @@ PARTIAL_SUFFIX = ".part"
 # An unreferenced file younger than this is assumed to belong to a request still
 # in flight and is left alone.
 ORPHAN_GRACE_SECONDS = 3600
+
+# The sweep exists to reclaim the occasional file left behind by a crashed
+# request. A sweep that wants to delete most of the directory is therefore not
+# doing the job it was designed for - it means the database being consulted does
+# not describe this upload directory, which is what happens when DATABASE_URL is
+# pointed somewhere new, when the database file is lost or reset, or when a
+# temporary database is opened against the real UPLOAD_DIR.
+#
+# That is not hypothetical: opening a throwaway database to verify a schema
+# migration deleted 154 uploads whose real records still referenced them, at
+# startup, silently. These two bounds make the sweep refuse instead.
+SWEEP_MAX_FRACTION = 0.25
+SWEEP_MIN_CANDIDATES = 20
 
 
 # Exactly what new_upload_name() produces, and nothing else. The sweep deletes
@@ -241,18 +254,63 @@ def sweep_orphans(connection, grace_seconds=ORPHAN_GRACE_SECONDS):
         referenced.add(os.path.normcase(os.path.basename(stored.replace("\\", "/"))))
 
     cutoff = time.time() - grace_seconds
-    removed = 0
+
+    ours = []
+    candidates = []
     for name in os.listdir(UPLOAD_DIR):
         path = os.path.abspath(os.path.join(UPLOAD_DIR, name))
         if not os.path.isfile(path):
             continue
         if not is_upload_name(name):
             continue          # not ours: .gitkeep, a README, an operator's file
+        ours.append(name)
         if os.path.normcase(name) in referenced:
             continue
         try:
             if os.path.getmtime(path) > cutoff:
                 continue          # young enough to still be in flight
+        except OSError as e:
+            log.warning("could not stat %s: %s", path, e)
+            continue
+        candidates.append(path)
+
+    if not candidates:
+        return 0
+
+    # Decide whether this looks like housekeeping or like a mismatched database,
+    # and refuse the latter. Deleting nothing is always recoverable; deleting a
+    # clinician's images is not.
+    #
+    # Magnitude is what separates the two cases, not emptiness: a fresh install
+    # whose first upload crashed has no rows and one stray file, and that is
+    # exactly the housekeeping this exists for. Both refusals are therefore
+    # gated on the candidate count first.
+    refusal = None
+    bulk = len(candidates) > SWEEP_MIN_CANDIDATES
+    if bulk and not referenced:
+        refusal = ("the database references no uploads at all, but {n} file(s) "
+                   "are present".format(n=len(candidates)))
+    elif (bulk and len(candidates) > SWEEP_MAX_FRACTION * max(len(ours), 1)):
+        refusal = ("{n} of {total} upload file(s) are unreferenced, over the "
+                   "{pct:.0f}% this sweep is willing to remove unattended"
+                   .format(n=len(candidates), total=len(ours),
+                           pct=SWEEP_MAX_FRACTION * 100))
+
+    if refusal and not ALLOW_BULK_SWEEP:
+        log.warning(
+            "refusing to sweep %s: %s. This usually means the database does not "
+            "belong to this upload directory - check DATABASE_URL before doing "
+            "anything else. Nothing has been deleted. Set ALLOW_BULK_SWEEP=1 to "
+            "sweep anyway, or remove the files by hand once you are certain.",
+            UPLOAD_DIR, refusal)
+        return 0
+    if refusal:
+        log.warning("ALLOW_BULK_SWEEP is set: sweeping %d file(s) despite %s",
+                    len(candidates), refusal)
+
+    removed = 0
+    for path in candidates:
+        try:
             os.remove(path)
             removed += 1
         except OSError as e:

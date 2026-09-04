@@ -45,9 +45,32 @@ DEFAULT_READOUT = os.getenv("READOUT", "sigmoid")
 # off. Refuse by default; set ALLOW_UNCALIBRATED=1 to serve anyway.
 ALLOW_UNCALIBRATED = os.getenv("ALLOW_UNCALIBRATED", "").strip().lower() in {"1", "true", "yes"}
 
+# The startup sweep refuses to delete uploads in bulk, because a sweep that large
+# means the database does not describe this upload directory rather than that the
+# files are junk. Set ALLOW_BULK_SWEEP=1 to override, having checked DATABASE_URL.
+ALLOW_BULK_SWEEP = os.getenv("ALLOW_BULK_SWEEP", "").strip().lower() in {"1", "true", "yes"}
+
 # Inference resolution. Must match configs/default.yaml img_size in the training
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))
+
+# Case labels are free text, so unlike the anatomic site there is no vocabulary
+# to validate against - only a length the column can hold.
+CASE_LABEL_MAX_LENGTH = 64
+
+# Recorded evaluation of the served checkpoint, surfaced by /api/model.
+#
+# EVALUATION_PATH holds the headline figures; SERVING_CHECK_PATH records the
+# thresholds those figures were measured under, which is what lets the endpoint
+# say whether the evaluation describes the configuration actually being served
+# rather than simply printing numbers next to an unrelated model. Both are
+# optional: absent, /api/model reports the serving configuration and says the
+# evaluation is unavailable, instead of inventing one.
+EVALUATION_PATH = os.getenv(
+    "EVALUATION_PATH", os.path.join(BASE_DIR, "docs", "evaluation_results.json"))
+SERVING_CHECK_PATH = os.getenv(
+    "SERVING_CHECK_PATH",
+    os.path.join(BASE_DIR, "docs", "evaluation_serving_check.json"))
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)

@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Depends, Header
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func, case
+from pydantic import BaseModel
+from typing import Optional
 from datetime import datetime, timezone
 import os
 import time
@@ -13,7 +16,7 @@ from ..database import get_db
 from ..models import DiagnosticSession
 from ..config import (UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, ADMIN_TOKEN,
                       ANATOMIC_SITES, MAX_CONCURRENT_INFERENCE,
-                      REQUIRE_HISTORY_TOKEN)
+                      REQUIRE_HISTORY_TOKEN, CASE_LABEL_MAX_LENGTH)
 from ..ml_engine import SkinCancerPredictor
 from ..logging_setup import get_logger, get_request_id
 from ..storage import (new_upload_name, to_stored_path, delete_stored_file,
@@ -31,6 +34,22 @@ def _discard(path):
         pass
     except OSError as e:
         log.warning("could not remove %s: %s", path, e)
+
+def normalise_case_label(value):
+    """Tidy an operator-typed case label, or None.
+
+    Free text, so there is no vocabulary to check it against - only whitespace to
+    collapse and a length the column can hold. Two labels that differ by spacing
+    alone would otherwise split one lesion's history into two cases that look
+    identical on screen.
+    """
+    if value is None:
+        return None
+    label = " ".join(str(value).split())
+    if not label:
+        return None
+    return label[:CASE_LABEL_MAX_LENGTH]
+
 
 router = APIRouter(prefix="/api", tags=["Diagnostics"])
 
@@ -84,6 +103,7 @@ def require_admin(x_admin_token: str = Header(default="")):
 def analyze_lesion(
     file: UploadFile = File(...),
     site: str = Form(default=""),
+    case_label: str = Form(default="", alias="case"),
     db: Session = Depends(get_db),
 ):
     """Upload an image and run synchronous EfficientNet-B3 inference.
@@ -101,6 +121,8 @@ def analyze_lesion(
     # Only values the UI actually offers are stored; anything else is discarded
     # rather than written through to the record.
     anatomic_site = site.strip() if site and site.strip() in ANATOMIC_SITES else None
+    # Free text, unlike the site: it names a lesion the operator is tracking.
+    scan_case_label = normalise_case_label(case_label)
     # The client-supplied extension is never trusted as a path component.
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -179,6 +201,7 @@ def analyze_lesion(
         session = DiagnosticSession(
             image_path=to_stored_path(filepath),
             anatomic_site=anatomic_site,
+            case_label=scan_case_label,
             status="completed",
             prediction=result["prediction"],
             confidence=result["confidence"],
@@ -212,6 +235,7 @@ def analyze_lesion(
             "scores": result["scores"],
             "is_high_risk": session.is_high_risk,
             "anatomic_site": session.anatomic_site,
+            "case_label": session.case_label,
             "melanoma_alert": session.melanoma_alert,
             "melanoma_probability": session.melanoma_probability,
             "heatmap_base64": result.get("heatmap_base64"),
@@ -301,6 +325,21 @@ def require_history_access(x_admin_token: str = Header(default="")):
         raise HTTPException(401, detail="Invalid or missing X-Admin-Token header.")
 
 
+def _image_is_available(stored):
+    """Is the file behind a record actually there?
+
+    `resolve_stored_path` answers a different question - whether the stored value
+    resolves to somewhere inside the upload directory - and a path can resolve
+    perfectly to a file that no longer exists. Retention, the orphan sweep and
+    plain manual deletion all leave rows whose images are gone, so `has_image`
+    has to stat the file. Reported without this check it disagreed with
+    GET /history/{id}/image, which does check: the client was told the image was
+    retained and then handed a 404 for it.
+    """
+    path = resolve_stored_path(stored)
+    return bool(path) and os.path.isfile(path)
+
+
 def _session_summary(s):
     """The fields the history list and the comparison view both read.
 
@@ -313,6 +352,7 @@ def _session_summary(s):
         "confidence": s.confidence,
         "is_high_risk": s.is_high_risk,
         "anatomic_site": s.anatomic_site,
+        "case_label": s.case_label,
         "melanoma_alert": s.melanoma_alert,
         "melanoma_probability": s.melanoma_probability,
         "threshold_used": s.threshold_used,
@@ -321,7 +361,7 @@ def _session_summary(s):
         # The comparison view needs to know whether an image is still on disk
         # before it offers a record for side-by-side inspection. Retention and
         # the orphan sweep can remove the file while the row survives.
-        "has_image": resolve_stored_path(s.image_path) is not None,
+        "has_image": _image_is_available(s.image_path),
     }
 
 
@@ -380,6 +420,77 @@ def get_history_image(session_id: int, db: Session = Depends(get_db)):
 
     # A record's image never changes, and the id is the whole identity.
     return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+
+class CaseLabelUpdate(BaseModel):
+    """Body of PATCH /api/history/{id}. `null` clears the label."""
+    case_label: Optional[str] = None
+
+
+@router.patch("/history/{session_id}", dependencies=[Depends(require_history_access)])
+def set_case_label(session_id: int, update: CaseLabelUpdate,
+                   db: Session = Depends(get_db)):
+    """Assign, change or clear the case label on an existing scan.
+
+    Editable after the fact on purpose: whether two scans are of the same lesion
+    is usually only apparent once the second one exists, so requiring the label
+    at scan time would mean it was almost never set.
+
+    Guarded like reading history rather than like deleting it. The label is not
+    destructive and any change is reversible, and gating it behind ADMIN_TOKEN -
+    unset by default - would make the feature unusable in the deployment the
+    bundled UI is built for. Set REQUIRE_HISTORY_TOKEN on anything reachable by
+    someone other than the operator; that closes writes here as well as reads.
+    """
+    session = (
+        db.query(DiagnosticSession)
+        .filter(DiagnosticSession.id == session_id,
+                DiagnosticSession.status == "completed")
+        .first()
+    )
+    if not session:
+        raise HTTPException(404, detail="Session not found")
+
+    session.case_label = normalise_case_label(update.case_label)
+    db.commit()
+    db.refresh(session)
+    log.info("scan %d: case_label=%s", session.id, session.case_label or "-")
+    return _session_summary(session)
+
+
+@router.get("/cases", dependencies=[Depends(require_history_access)])
+def get_cases(db: Session = Depends(get_db)):
+    """Every case label in use, with what is filed under it.
+
+    Cases are not a table: a case is simply the set of scans sharing a label, so
+    there is nothing to create, nothing to leave orphaned when its last scan is
+    deleted, and no second source of truth to fall out of step with the records.
+    """
+    rows = (
+        db.query(
+            DiagnosticSession.case_label,
+            func.count(DiagnosticSession.id),
+            func.min(DiagnosticSession.created_at),
+            func.max(DiagnosticSession.created_at),
+            func.sum(case((DiagnosticSession.is_high_risk, 1), else_=0)),
+        )
+        .filter(DiagnosticSession.status == "completed",
+                DiagnosticSession.case_label.isnot(None))
+        .group_by(DiagnosticSession.case_label)
+        .order_by(func.max(DiagnosticSession.created_at).desc())
+        .all()
+    )
+
+    return [
+        {
+            "case_label": label,
+            "scan_count": int(count or 0),
+            "first_scan": _utc_isoformat(first),
+            "latest_scan": _utc_isoformat(last),
+            "high_risk_count": int(high or 0),
+        }
+        for label, count, first, last, high in rows
+    ]
 
 
 @router.delete("/history/all", dependencies=[Depends(require_admin)])

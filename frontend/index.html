@@ -516,6 +516,9 @@
             <a href="#" data-view="view-knowledge" class="nav-item">
                 <span class="material-symbols-outlined">menu_book</span><span>Reference</span>
             </a>
+            <a href="#" data-view="view-model" class="nav-item">
+                <span class="material-symbols-outlined">fact_check</span><span>Model card</span>
+            </a>
         </nav>
 
         <div class="p-4 border-t border-outline-variant">
@@ -677,6 +680,22 @@
                                     <button data-site="Lower Extremities" class="site-tag-btn anatomic-tag seg" aria-pressed="false">Lower extremities</button>
                                     <button data-site="Head &amp; Neck" class="site-tag-btn anatomic-tag seg" aria-pressed="false">Head &amp; neck</button>
                                     <button data-site="Palms &amp; Soles" class="site-tag-btn anatomic-tag seg" aria-pressed="false">Palms &amp; soles</button>
+                                </div>
+
+                                <!-- Case label. The one thing that lets two scans be
+                                     compared as the same lesion rather than as two
+                                     unrelated images — and it is an assertion by
+                                     whoever types it, not something inferred. -->
+                                <div class="pt-1 flex flex-col gap-1.5 border-t border-outline-variant mt-1">
+                                    <label for="input-case-label" class="label pt-3">Case / lesion</label>
+                                    <input type="text" id="input-case-label" class="input w-full"
+                                           maxlength="64" autocomplete="off" list="case-label-suggestions"
+                                           placeholder="e.g. Left shoulder mole" />
+                                    <datalist id="case-label-suggestions"></datalist>
+                                    <p class="text-[12px] text-on-surface-muted">
+                                        Optional. Scans sharing a label can be compared as one lesion over time.
+                                        Can be set or changed later from History.
+                                    </p>
                                 </div>
                             </div>
 
@@ -886,7 +905,16 @@
                     </div>
 
                     <!-- Record pickers -->
-                    <div class="px-4 sm:px-margin-desktop pt-4">
+                    <div class="px-4 sm:px-margin-desktop pt-4 flex flex-col gap-3">
+                        <div class="panel p-4 flex flex-col gap-1.5">
+                            <label for="compare-case-filter" class="label">Case</label>
+                            <select id="compare-case-filter" class="input w-full md:max-w-md">
+                                <option value="">All scans</option>
+                            </select>
+                            <p class="text-[12px] text-on-surface-muted" id="compare-case-hint">
+                                Pick a case to narrow both lists to its scans, oldest and newest preselected.
+                            </p>
+                        </div>
                         <div class="panel p-4 grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 md:gap-4 md:items-end">
                             <div class="flex flex-col gap-1.5">
                                 <label for="compare-select-a" class="label">Scan A</label>
@@ -958,7 +986,7 @@
                         </div>
 
                         <!-- At a glance -->
-                        <div class="grid grid-cols-2 xl:grid-cols-4 gap-3" id="compare-summary">
+                        <div class="grid grid-cols-2 xl:grid-cols-5 gap-3" id="compare-summary">
                             <div class="panel p-4">
                                 <span class="label">Predicted class</span>
                                 <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-agreement">&mdash;</p>
@@ -973,6 +1001,11 @@
                                 <span class="label">Between records</span>
                                 <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-interval">&mdash;</p>
                                 <p class="text-[12px] text-on-surface-muted mt-0.5">Recording times, not lesion age</p>
+                            </div>
+                            <div class="panel p-4">
+                                <span class="label">Case</span>
+                                <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-case">&mdash;</p>
+                                <p class="text-[12px] text-on-surface-muted mt-0.5" id="compare-case-detail">Operator-assigned</p>
                             </div>
                             <div class="panel p-4">
                                 <span class="label">Anatomic site</span>
@@ -1027,11 +1060,7 @@
                         <div class="panel-inset p-4 flex items-start gap-3">
                             <span class="material-symbols-outlined text-[20px] text-on-surface-muted shrink-0 mt-0.5">info</span>
                             <div class="text-[13px] text-on-surface-variant leading-5">
-                                <p>
-                                    <span class="font-semibold text-on-surface">These are two independent inferences.</span>
-                                    Nothing recorded here links a scan to a lesion or a patient, so the application cannot know
-                                    whether both images show the same lesion &mdash; that is your judgement, not its finding.
-                                </p>
+                                <p id="compare-identity-note"></p>
                                 <p class="mt-2">
                                     Every difference shown above is a difference between two model outputs. None of it is a
                                     measurement of the skin: no growth, diameter, pigmentation or border metric is computed
@@ -1082,7 +1111,7 @@
                             </div>
                             <div class="flex items-center gap-2">
                                 <label for="history-search-input" class="sr-only">Search scans</label>
-                                <input type="text" id="history-search-input" placeholder="Search diagnosis or ID" class="input w-full sm:w-60" />
+                                <input type="text" id="history-search-input" placeholder="Search diagnosis, case or ID" class="input w-full sm:w-60" />
                                 <button id="btn-export-csv" class="btn">
                                     <span class="material-symbols-outlined">download</span><span class="hidden sm:inline">CSV</span>
                                 </button>
@@ -1095,6 +1124,7 @@
                                     <tr class="border-b border-outline-variant">
                                         <th scope="col" class="label py-3 px-5">ID</th>
                                         <th scope="col" class="label py-3 px-5">Recorded</th>
+                                        <th scope="col" class="label py-3 px-5">Case</th>
                                         <th scope="col" class="label py-3 px-5">Prediction</th>
                                         <th scope="col" class="label py-3 px-5 text-right">Confidence</th>
                                         <th scope="col" class="label py-3 px-5">Flag</th>
@@ -1234,6 +1264,194 @@
                             </div>
                         </article>
                     </div>
+                </div>
+            </div>
+
+            <!-- ══════════ VIEW 6 · MODEL CARD ════════════════════════════ -->
+            <!-- Every figure on this screen is read from a file by /api/model.
+                 The repository's premise is honest measurement, and until now
+                 none of it reached the interface: accuracy, per-class recall and
+                 the confusion matrix sat in docs/ where only someone reading the
+                 source would find them. Nothing here is computed in the client
+                 beyond percentage formatting, and an artifact the server could
+                 not read is reported as unavailable rather than left blank. -->
+            <div id="view-model" class="view-container view-transition hidden">
+                <div class="flex flex-col w-full p-4 sm:p-margin-desktop gap-5">
+
+                    <div class="flex flex-wrap items-end justify-between gap-4">
+                        <div>
+                            <h1 class="font-headline-lg text-headline-lg text-on-surface">Model card</h1>
+                            <p class="text-[13px] text-on-surface-variant mt-0.5" id="model-subtitle">
+                                What this deployment serves, and what it measured.
+                            </p>
+                        </div>
+                        <button id="btn-model-refresh" class="btn">
+                            <span class="material-symbols-outlined">refresh</span>
+                            <span class="hidden sm:inline">Reload</span>
+                        </button>
+                    </div>
+
+                    <!-- Whether these figures describe the running configuration -->
+                    <div id="model-provenance" class="px-4 py-3 rounded-xl border border-outline-variant bg-surface-container flex items-start gap-3">
+                        <span id="model-provenance-icon" class="material-symbols-outlined text-on-surface-variant text-[22px] shrink-0">info</span>
+                        <p id="model-provenance-text" class="text-[13px] text-on-surface-variant leading-5">Loading&hellip;</p>
+                    </div>
+
+                    <!-- Provenance and gate state. Placed above the figures on
+                         purpose: whether a number can be traced is a property of
+                         the number, and belongs beside it rather than in a
+                         footnote underneath. -->
+                    <section class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                        <div class="panel p-5 flex flex-col gap-2" id="model-provenance-card">
+                            <div class="flex items-center justify-between gap-3">
+                                <h2 class="font-headline-md text-headline-md text-on-surface">Threshold provenance</h2>
+                                <span id="model-provenance-badge" class="chip">&mdash;</span>
+                            </div>
+                            <p class="text-[13px] text-on-surface-variant leading-5" id="model-provenance-body">&mdash;</p>
+                            <p class="font-data-sm text-[12px] text-on-surface-muted" id="model-provenance-fields"></p>
+                        </div>
+                        <div class="panel p-5 flex flex-col gap-2" id="model-ood-card">
+                            <div class="flex items-center justify-between gap-3">
+                                <h2 class="font-headline-md text-headline-md text-on-surface">Input screening</h2>
+                                <span id="model-ood-badge" class="chip">&mdash;</span>
+                            </div>
+                            <p class="text-[13px] text-on-surface-variant leading-5" id="model-ood-body">&mdash;</p>
+                        </div>
+                    </section>
+
+                    <!-- Headline figures -->
+                    <section class="grid grid-cols-2 xl:grid-cols-4 gap-3" id="model-headline">
+                        <div class="panel p-4">
+                            <span class="label">Accuracy</span>
+                            <p class="font-data-lg text-[30px] leading-9 font-semibold text-on-surface mt-1.5 tabular" id="model-accuracy">&mdash;</p>
+                            <p class="text-[12px] text-on-surface-muted mt-1" id="model-testset">&mdash;</p>
+                        </div>
+                        <div class="panel p-4">
+                            <span class="label">Macro F1</span>
+                            <p class="font-data-lg text-[30px] leading-9 font-semibold text-on-surface mt-1.5 tabular" id="model-macro-f1">&mdash;</p>
+                            <p class="text-[12px] text-on-surface-muted mt-1">Unweighted mean across the 7 classes</p>
+                        </div>
+                        <div class="panel p-4">
+                            <span class="label">Melanoma recall</span>
+                            <p class="font-data-lg text-[30px] leading-9 font-semibold text-risk-high mt-1.5 tabular" id="model-mel-recall">&mdash;</p>
+                            <p class="text-[12px] text-on-surface-muted mt-1" id="model-mel-recall-note">&mdash;</p>
+                        </div>
+                        <div class="panel p-4">
+                            <span class="label">Calibration error</span>
+                            <p class="font-data-lg text-[30px] leading-9 font-semibold text-on-surface mt-1.5 tabular" id="model-ece">&mdash;</p>
+                            <p class="text-[12px] text-on-surface-muted mt-1">Expected calibration error &mdash; lower is better</p>
+                        </div>
+                    </section>
+
+                    <!-- The operating point that actually matters clinically -->
+                    <section class="panel p-5 sm:p-6 flex flex-col gap-4" id="model-operating-point">
+                        <div>
+                            <h2 class="font-headline-md text-headline-md text-on-surface">Melanoma operating point</h2>
+                            <p class="text-[13px] text-on-surface-variant mt-1">
+                                The prediction alone misses melanomas the independent alert channel still catches.
+                                These two numbers describe that gap, and they are the ones worth arguing about.
+                            </p>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div class="panel-inset p-4">
+                                <span class="label">Caught by the prediction</span>
+                                <p class="font-data-lg text-data-lg text-on-surface mt-1.5 tabular" id="model-op-recall">&mdash;</p>
+                                <p class="text-[12px] text-on-surface-muted mt-1">Melanomas where MEL won the decision</p>
+                            </div>
+                            <div class="panel-inset p-4">
+                                <span class="label">Surfaced for review</span>
+                                <p class="font-data-lg text-data-lg text-risk-low mt-1.5 tabular" id="model-op-surfaced">&mdash;</p>
+                                <p class="text-[12px] text-on-surface-muted mt-1">Including the melanoma alert channel</p>
+                            </div>
+                            <div class="panel-inset p-4">
+                                <span class="label">Review rate</span>
+                                <p class="font-data-lg text-data-lg text-on-surface mt-1.5 tabular" id="model-op-review">&mdash;</p>
+                                <p class="text-[12px] text-on-surface-muted mt-1">Share of all scans flagged for a human</p>
+                            </div>
+                        </div>
+                        <p class="text-[13px] text-on-surface-variant leading-5" id="model-op-prose">&mdash;</p>
+                    </section>
+
+                    <!-- Per class -->
+                    <section class="panel flex flex-col">
+                        <div class="p-5 border-b border-outline-variant">
+                            <h2 class="font-headline-md text-headline-md text-on-surface">Per class</h2>
+                            <p class="text-[13px] text-on-surface-variant mt-0.5">
+                                Measured on the held-out split, at the decision thresholds this server is using.
+                            </p>
+                        </div>
+                        <div class="w-full overflow-x-auto">
+                            <table class="w-full text-left whitespace-nowrap">
+                                <thead>
+                                    <tr class="border-b border-outline-variant">
+                                        <th scope="col" class="label py-3 px-5">Class</th>
+                                        <th scope="col" class="label py-3 px-5 text-right">Support</th>
+                                        <th scope="col" class="label py-3 px-5 text-right">Threshold</th>
+                                        <th scope="col" class="label py-3 px-5 text-right">Precision</th>
+                                        <th scope="col" class="label py-3 px-5 text-right">Recall</th>
+                                        <th scope="col" class="label py-3 px-5 text-right">F1</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="model-per-class"></tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <!-- Confusion matrix -->
+                    <section class="panel p-5 sm:p-6 flex flex-col gap-4">
+                        <div>
+                            <h2 class="font-headline-md text-headline-md text-on-surface">Confusion matrix</h2>
+                            <p class="text-[13px] text-on-surface-variant mt-1">
+                                Rows are the true class, columns the predicted one. The diagonal is correct;
+                                everything off it is a specific, named mistake.
+                            </p>
+                        </div>
+                        <div class="w-full overflow-x-auto">
+                            <table class="text-left" id="model-confusion">
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <p class="text-[12px] text-on-surface-muted" id="model-confusion-note">&mdash;</p>
+                    </section>
+
+                    <!-- Serving configuration -->
+                    <section class="panel flex flex-col">
+                        <div class="p-5 border-b border-outline-variant">
+                            <h2 class="font-headline-md text-headline-md text-on-surface">Serving configuration</h2>
+                            <p class="text-[13px] text-on-surface-variant mt-0.5">
+                                Read live from this process, not from documentation.
+                            </p>
+                        </div>
+                        <div class="w-full overflow-x-auto">
+                            <table class="w-full text-left whitespace-nowrap">
+                                <tbody id="model-config"></tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <!-- Limits -->
+                    <section class="panel p-5 sm:p-6 flex flex-col gap-3">
+                        <h2 class="font-headline-md text-headline-md text-on-surface">Limits</h2>
+                        <ul class="text-[13px] text-on-surface-variant leading-6 list-disc pl-5 flex flex-col gap-1.5" id="model-limits">
+                            <li>
+                                Measured on a held-out split of <strong>HAM10000</strong> only. Performance on other
+                                populations, skin tones, cameras or dermatoscopes is <strong>not established by these
+                                numbers</strong>, and HAM10000 is known to under-represent darker skin.
+                            </li>
+                            <li>
+                                The model sees one image and nothing else. No history, no clinical context, no
+                                examination, no second view of the same lesion.
+                            </li>
+                            <li>
+                                Nothing about the lesion is measured &mdash; no size, growth, pigmentation or border
+                                metric is computed anywhere in this application.
+                            </li>
+                            <li>
+                                This is a research decision-support tool. It is not a medical device, has no regulatory
+                                clearance, and an unflagged result is not a clinical clearance.
+                            </li>
+                        </ul>
+                    </section>
                 </div>
             </div>
 

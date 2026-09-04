@@ -5,7 +5,7 @@
 A defect-driven pass over the whole application. Every figure quoted below was
 measured on this machine; nothing here is estimated.
 
-Test suite: **41 → 102 tests**. A lint gate was added. The served model, its
+Test suite: **41 → 123 tests**. A lint gate was added. The served model, its
 weights and its decision thresholds are unchanged — no retraining happened and
 no published metric moved.
 
@@ -57,6 +57,156 @@ is now a single class toggle against component styles (`.nav-item.is-active`,
 no longer drift apart. Several of those strings referenced `bg-surface-elevated`,
 `bg-surface-base` and `border-surface-elevated`, which were never defined in the
 Tailwind config and silently rendered as nothing.
+
+### The startup sweep no longer deletes uploads in bulk
+
+`init_db()` runs `sweep_orphans()` on every start, removing any upload file no
+row references and older than the one-hour grace period. Pointed at a different
+or empty database — `DATABASE_URL` changed, the database file lost or reset, a
+throwaway database opened against the real upload directory — every image the
+previous database referenced became an orphan and was deleted, silently, before
+the server finished starting. It removed 154 uploads here while their real
+records still referenced them.
+
+The sweep exists to reclaim the occasional file a crashed request left behind, so
+a sweep wanting most of the directory is not doing that job. It now refuses when
+the database references nothing at all, or when unreferenced files exceed a
+quarter of the directory — both gated on a minimum of 20 candidates, because
+magnitude is the signal and not emptiness: a fresh install whose first upload
+crashed has no rows and one stray file, and reclaiming that is the point.
+`ALLOW_BULK_SWEEP=1` overrides, in the same style as `ALLOW_UNCALIBRATED`.
+
+The refusal is decided before anything is deleted, so a refused sweep leaves the
+directory byte-identical. Five tests cover it, and the three existing sweep tests
+caught the first version of the guard being too strict.
+
+### The model card states what cannot be traced
+
+Two things the interface was quietly not saying.
+
+**The thresholds in use cannot be traced to the tool that produces them.**
+`scripts/optimize_thresholds.py` always writes `fitted_on`, `reported_on`,
+`rule`, `objective` and `test_metrics`. `models/class_thresholds.json` has
+`fitted_on` as prose, none of the other four, and a `precision` field the script
+never writes — so it came from somewhere else, and that command will not
+reproduce the artifact every served decision depends on. The missing field that
+matters is `reported_on`: the script exists to fit on a calibration split and
+report on a held-out one, "because fitting and reporting on the same images
+overstates performance", and without it the file cannot show that separation was
+kept. Its metrics being byte-identical to the 1503-image test evaluation while
+`fitted_on` names calib+val is consistent with a mislabel rather than an
+overfit — but nothing in the repository can currently demonstrate either.
+`/api/model` reports this as `threshold_provenance`, and the card says the
+figures are unverified rather than printing `fitted_on` as though it settled it.
+
+**The out-of-distribution gate has never been fitted.** Neither
+`models/ood_config.json` nor `models/ood_stats.npz` exists: the colour gate runs
+on provisional thresholds and the feature-space stage does not run at all. That
+was already reported per scan, but "the safety gate has never been fitted"
+belongs on the page describing what the model is, so `/api/model` now carries
+`ood_gate` and the card states plainly that screening is a colour heuristic on
+unfitted numbers which cannot reject a photograph of another real object — which
+is why the bundled `cat.jpg` control passes.
+
+Neither is fixable without re-acquiring HAM10000; both `scripts/calibrate_ood.py`
+and the threshold pipeline need the data. The recipe survives — the split
+manifests are tracked and carry `lesion_id`, and `train_config.json` records the
+seed and every hyperparameter — so this is a rerun, not a reconstruction.
+
+### Case grouping: two scans can now be one lesion
+
+The comparison view could show two records and their full model output, but had
+to state that it could not know whether they showed the same lesion — nothing in
+the schema linked a scan to anything. A nullable `case_label` on the session
+closes that, added by the existing `_add_missing_columns()` migration and
+verified against a database created before the column existed.
+
+A case is simply the set of scans sharing a label. There is no cases table:
+nothing to create, nothing left orphaned when a case's last scan is deleted, and
+no second source of truth to fall out of step with the records. `GET /api/cases`
+derives them by grouping.
+
+Labels are set on the console at scan time — with a suggestion list drawn from
+labels already in use, so an existing lesion is picked rather than retyped into a
+near-miss that splits its history in two — and edited inline in History
+afterwards, which is when it usually becomes clear that two scans belong
+together. `PATCH /api/history/{id}` is guarded by the history *read* guard rather
+than the admin token: the change is non-destructive and reversible, and gating it
+behind `ADMIN_TOKEN` (unset by default) would make the feature unusable in the
+deployment the bundled UI is built for.
+
+In the comparison view, choosing a case narrows both pickers to its scans and
+preselects the oldest and the newest — the pair anyone tracking a lesion wants —
+and A and B are ordered chronologically so "earlier" and "later" are true.
+
+**What grouping does not license.** It changes who is making the claim of
+identity, and nothing else. The notice now reads "you have filed both scans under
+X — that is your assertion that they show the same lesion; the application did
+not determine it and cannot check it", and the half about measuring nothing is
+identical either way. No growth, diameter, pigmentation or border metric exists
+anywhere in this codebase, and a label does not create one.
+
+Case labels are the only free text this application stores, which makes them the
+only value rendered into `innerHTML` that is not a server-constrained enum or a
+number. Every insertion point escapes: the history cell, the console datalist,
+the case filter, the comparison notice and the recorded-values table. One did not
+— `compareOptionLabel()` built `<option>` markup raw, and a label of
+`<img src=x onerror=alert(1)>` put two live nodes into the select. Fixed and
+verified at zero injected nodes across the view. The API deliberately stores the
+label verbatim rather than sanitising it: stripping markup server-side would
+corrupt legitimate labels while still leaving the client responsible.
+
+### Two things found the hard way
+
+**`has_image` could claim an image the image route would not serve.** It was
+derived from `resolve_stored_path()` alone, which answers whether a stored value
+points inside the upload directory — not whether anything is there. The client
+was told an image was retained and then handed a 404. It now stats the file, so
+the flag and the endpoint agree.
+
+**Starting against a different database deletes the previous one's uploads.**
+`init_db()` runs `sweep_orphans()` on every start, removing any upload no row
+references and older than the one-hour grace period. Pointing `DATABASE_URL` at a
+second or empty database therefore wipes the first's images, silently, at
+startup. Observed for real while verifying the migration against a temporary
+database: 154 uploads removed while their records still referenced them. The
+records survive and degrade correctly — which is how the `has_image` bug above
+surfaced — but the files are gone. Recorded under Known issues; the sweep's
+trigger conditions have not been changed.
+
+### A model card, from figures that were already measured
+
+The repository's premise is honest measurement, and none of it reached the
+interface. Accuracy, per-class recall, calibration error and the confusion matrix
+sat in `docs/` where only someone reading the source would find them, while the
+UI asserted a single recall figure hardcoded in JavaScript. `GET /api/model` now
+publishes them, and a **Model card** view renders them: headline metrics, the
+melanoma operating point, a per-class table carrying the live decision
+thresholds, the confusion matrix, the serving configuration read from the running
+process, and the limits.
+
+**The page leads with whether the figures are even about this model.** Publishing
+measured numbers beside a configuration they were not measured on would make the
+page worse than not having one, so the endpoint compares the thresholds recorded
+in `docs/evaluation_serving_check.json` against the ones the server is actually
+using and answers in three states: they match, they differ (naming which classes
+and both values), or it cannot tell. The interface renders each differently, and
+an absent artifact reports as `evaluation_available: false` rather than as
+blanks. Nothing is computed in the client beyond percentage formatting.
+
+Two details worth recording. The confusion matrix in `evaluation_results.json` is
+a bare 7×7 array with **no class labels of its own**, so the axes are labelled
+with the order `/api/model` declares — an assumption that would mislabel every
+cell while looking entirely plausible if an evaluation run ever wrote a different
+order. It is now pinned by a test to two independent properties of the same file:
+each row must sum to that class's recorded support, and each diagonal ratio must
+reproduce its recorded recall. And the matrix is shaded per row rather than
+globally, because NV is 1000 of 1503 images and a global scale renders every
+other row blank.
+
+The container image previously copied no part of `docs/`, so the endpoint would
+have reported no evaluation inside it. The Dockerfile now copies the two JSON
+artifacts and nothing else — the rest is prose and PDFs.
 
 ### The quoted melanoma recall is read, not remembered
 

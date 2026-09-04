@@ -388,6 +388,157 @@ def test_history_list_and_detail_agree(client, lesion):
     assert client.get(f"/api/history/{created['session_id']}").json() == row
 
 
+# ── case labels ──────────────────────────────────────────────────────────
+# A case is the set of scans sharing a label. It is the only thing linking two
+# scans, it is asserted by a person rather than inferred, and it is the one piece
+# of free text this application stores.
+
+def test_case_label_is_normalised_not_validated():
+    """No vocabulary to check against - only whitespace and a length."""
+    from backend.routers.diagnostics import normalise_case_label
+    from backend.config import CASE_LABEL_MAX_LENGTH
+
+    assert normalise_case_label("  Left  shoulder   mole  ") == "Left shoulder mole"
+    assert normalise_case_label("") is None
+    assert normalise_case_label("   ") is None
+    assert normalise_case_label(None) is None
+    # Two labels differing only by spacing would split one lesion's history into
+    # two cases that look identical on screen.
+    assert normalise_case_label("A  B") == normalise_case_label("A B")
+    assert len(normalise_case_label("x" * 500)) == CASE_LABEL_MAX_LENGTH
+
+
+@pytest.mark.slow
+def test_case_label_is_recorded_with_the_scan(client, lesion):
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                       data={"site": "Anterior Torso",
+                             "case": "  Left  shoulder mole "}).json()
+
+    assert body["case_label"] == "Left shoulder mole"
+    assert client.get(f"/api/history/{body['session_id']}").json()["case_label"] \
+        == "Left shoulder mole"
+
+
+@pytest.mark.slow
+def test_case_label_can_be_set_changed_and_cleared_afterwards(client, lesion):
+    """Whether two scans are one lesion is usually only clear once both exist."""
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    sid = created["session_id"]
+    assert created["case_label"] is None
+
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": "Right calf"}).json()["case_label"] == "Right calf"
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": None}).json()["case_label"] is None
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": "  spaced   out "}).json()["case_label"] == "spaced out"
+
+
+def test_case_label_patch_404s_for_an_unknown_id(client):
+    assert client.patch("/api/history/99999999",
+                        json={"case_label": "x"}).status_code == 404
+
+
+@pytest.mark.slow
+def test_cases_aggregate_the_scans_filed_under_each_label(client, lesion):
+    """Cases are derived, not stored: nothing to orphan, no second source of truth."""
+    ids = []
+    for _ in range(2):
+        ids.append(client.post(
+            "/api/analyze", files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+            data={"case": "Shoulder A"}).json()["session_id"])
+    client.post("/api/analyze", files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                data={"case": "Shoulder B"})
+
+    cases = {c["case_label"]: c for c in client.get("/api/cases").json()}
+    assert cases["Shoulder A"]["scan_count"] == 2
+    assert cases["Shoulder B"]["scan_count"] == 1
+    assert cases["Shoulder A"]["first_scan"] <= cases["Shoulder A"]["latest_scan"]
+
+    # Clearing the last label removes the case, because there is no row to leave
+    # behind pointing at nothing.
+    client.patch(f"/api/history/{ids[0]}", json={"case_label": None})
+    client.patch(f"/api/history/{ids[1]}", json={"case_label": None})
+    assert "Shoulder A" not in {c["case_label"] for c in client.get("/api/cases").json()}
+
+
+@pytest.mark.slow
+def test_case_label_is_stored_verbatim_and_never_interpreted(client, lesion):
+    """The label is free text, so the API must not sanitise it into something else.
+
+    Escaping is the renderer's job and is done at every insertion point in
+    app.js. Stripping or rewriting markup here instead would corrupt legitimate
+    labels while still leaving the client responsible - so this pins the API to
+    storing exactly what it was given, and the client to escaping it.
+    """
+    hostile = "<img src=x onerror=alert(1)>"
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                          data={"case": hostile}).json()
+
+    assert created["case_label"] == hostile
+    assert client.get(f"/api/history/{created['session_id']}").json()["case_label"] == hostile
+    client.patch(f"/api/history/{created['session_id']}", json={"case_label": None})
+
+
+@pytest.mark.slow
+def test_case_writes_follow_the_history_read_guard(client, lesion, monkeypatch,
+                                                   admin_headers):
+    """Labels are not destructive, so they are gated like reads, not like deletes.
+
+    Gating them behind ADMIN_TOKEN - unset by default - would make the feature
+    unusable in the deployment the bundled UI is built for. Turning on
+    REQUIRE_HISTORY_TOKEN has to close writes here as well as reads.
+    """
+    import backend.routers.diagnostics as diagnostics
+
+    sid = client.post("/api/analyze",
+                      files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()["session_id"]
+
+    monkeypatch.setattr(diagnostics, "REQUIRE_HISTORY_TOKEN", True)
+    assert client.patch(f"/api/history/{sid}", json={"case_label": "x"}).status_code == 401
+    assert client.get("/api/cases").status_code == 401
+    assert client.patch(f"/api/history/{sid}", json={"case_label": "x"},
+                        headers=admin_headers).status_code == 200
+    assert client.get("/api/cases", headers=admin_headers).status_code == 200
+
+
+@pytest.mark.slow
+def test_has_image_agrees_with_the_image_endpoint(client, lesion):
+    """A record cannot claim to have an image the image route will not serve.
+
+    `has_image` was derived from resolve_stored_path() alone, which answers
+    whether the stored value points inside the upload directory - not whether
+    anything is there. Retention, the orphan sweep and manual deletion all leave
+    rows whose files are gone, and the client was told the image was retained and
+    then handed a 404 for it. Found for real when a sweep removed 154 uploads
+    that their records still referenced.
+    """
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    sid = created["session_id"]
+
+    assert client.get(f"/api/history/{sid}").json()["has_image"] is True
+    assert client.get(f"/api/history/{sid}/image").status_code == 200
+
+    # Remove the file the way retention and the sweep do, leaving the row.
+    from backend.models import DiagnosticSession
+    from backend.database import SessionLocal
+    from backend.storage import resolve_stored_path
+
+    db = SessionLocal()
+    try:
+        stored = db.query(DiagnosticSession).filter_by(id=sid).first().image_path
+    finally:
+        db.close()
+    os.remove(resolve_stored_path(stored))
+
+    assert client.get(f"/api/history/{sid}").json()["has_image"] is False
+    assert client.get(f"/api/history/{sid}/image").status_code == 404
+
+
 def test_history_detail_404s_for_an_unknown_id(client):
     assert client.get("/api/history/99999999").status_code == 404
 
@@ -706,6 +857,161 @@ def test_history_can_be_put_behind_the_admin_token(client, monkeypatch,
     monkeypatch.setattr(diagnostics, "REQUIRE_HISTORY_TOKEN", True)
     assert client.get("/api/history").status_code == 401
     assert client.get("/api/history", headers=admin_headers).status_code == 200
+
+
+# ── model card ───────────────────────────────────────────────────────────
+# /api/model publishes the recorded evaluation. These figures carry more weight
+# than anything else the interface shows, so the endpoint has to be right about
+# whose numbers they are.
+
+def test_model_card_reports_the_serving_configuration(client):
+    """Readable without a checkpoint: it reads files, it does not load the model."""
+    body = client.get("/api/model").json()
+
+    assert body["backbone"] == "EfficientNet-B3"
+    assert body["classes"] == ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+    assert body["thresholds"] is not None, "thresholds ship with the repo"
+    assert set(body["thresholds"]) == set(body["classes"])
+    assert "readout" in body["decision_layer"]
+    # Publishing a page about the model must not drag 123 MB into memory.
+    assert body["checkpoint"]["loaded"] is False or body["checkpoint"]["present"]
+
+
+def test_model_card_reports_whether_thresholds_can_be_traced(client):
+    """The figures are only as good as the file behind them.
+
+    scripts/optimize_thresholds.py always writes `reported_on` - the field
+    showing thresholds were scored on a split separate from the one they were
+    tuned on, which is the entire reason that tool exists. A file without it
+    cannot demonstrate the separation, so the card has to say so rather than
+    print a confident `fitted_on` beside the numbers.
+    """
+    p = client.get("/api/model").json()["threshold_provenance"]
+
+    assert p["readable"] is True
+    assert isinstance(p["produced_by_pipeline"], bool)
+    assert isinstance(p["missing_fields"], list)
+    # Traceable means both halves recorded, and different.
+    if p["produced_by_pipeline"]:
+        assert p["reported_on"] and p["reported_on"] != p["fitted_on"]
+        assert p["splits_shown_separate"] is True
+    else:
+        assert p["missing_fields"], "not from the pipeline, yet nothing missing?"
+        assert p["splits_shown_separate"] is False
+
+
+def test_threshold_provenance_detects_a_file_from_the_pipeline(tmp_path):
+    """The check must recognise a good file, not just reject the current one."""
+    import json
+    from backend.ml_engine import threshold_provenance
+
+    good = tmp_path / "class_thresholds.json"
+    good.write_text(json.dumps({
+        "fitted_on": "/data/calib", "reported_on": "/data/test",
+        "readout": "softmax", "rule": "argmax(probability - threshold)",
+        "objective": "macro_f1", "class_thresholds": {"mel": 0.0},
+        "test_metrics": {"accuracy": 0.8, "macro_f1": 0.7},
+        "per_class_metrics": {"mel": {"threshold": 0.0, "f1": 0.6, "recall": 0.8}},
+    }), encoding="utf-8")
+
+    p = threshold_provenance(str(good))
+    assert p["produced_by_pipeline"] is True
+    assert p["missing_fields"] == []
+    assert p["splits_shown_separate"] is True
+
+    # Fitted and reported on the same split is the failure the tool guards
+    # against, and it must not read as traceable.
+    same = tmp_path / "same.json"
+    same.write_text(json.dumps({
+        "fitted_on": "/data/test", "reported_on": "/data/test",
+        "rule": "r", "objective": "o", "test_metrics": {},
+    }), encoding="utf-8")
+    assert threshold_provenance(str(same))["splits_shown_separate"] is False
+
+    assert threshold_provenance(str(tmp_path / "absent.json"))["readable"] is False
+
+
+def test_model_card_reports_the_ood_gate_state(client):
+    """The screening the console advertises belongs on the page describing the model."""
+    gate = client.get("/api/model").json()["ood_gate"]
+    assert set(gate) == {"thresholds_fitted", "feature_stage_fitted"}
+    assert all(isinstance(v, bool) for v in gate.values())
+
+
+def test_model_card_says_whether_the_evaluation_matches_what_is_served(client):
+    """The whole point: numbers measured under other thresholds are not ours."""
+    body = client.get("/api/model").json()
+
+    if not body["evaluation_available"]:
+        pytest.skip("no evaluation artifact in this checkout")
+
+    assert body["evaluation_describes_this_configuration"] is True, (
+        "the shipped evaluation should have been measured under the shipped "
+        f"thresholds; mismatches: {body['evaluation_threshold_mismatches']}")
+    assert body["evaluation_threshold_mismatches"] == []
+
+
+def test_model_card_flags_an_evaluation_measured_under_other_thresholds(client,
+                                                                       monkeypatch,
+                                                                       tmp_path):
+    """A drifted evaluation must be called out, not quietly published."""
+    import json
+    import backend.main as main
+
+    check = json.loads(open(main.SERVING_CHECK_PATH, encoding="utf-8").read())
+    check["thresholds"]["mel"] = 0.99          # not what the server is using
+    drifted = tmp_path / "drifted.json"
+    drifted.write_text(json.dumps(check), encoding="utf-8")
+    monkeypatch.setattr(main, "SERVING_CHECK_PATH", str(drifted))
+
+    body = client.get("/api/model").json()
+    assert body["evaluation_describes_this_configuration"] is False
+    mismatch = [m for m in body["evaluation_threshold_mismatches"] if m["class"] == "mel"]
+    assert mismatch and mismatch[0]["evaluated_with"] == 0.99
+
+
+def test_model_card_degrades_when_the_evaluation_is_absent(client, monkeypatch,
+                                                           tmp_path):
+    """Absent artifacts are reported as absent. Nothing is filled in."""
+    import backend.main as main
+
+    monkeypatch.setattr(main, "EVALUATION_PATH", str(tmp_path / "nope.json"))
+    monkeypatch.setattr(main, "SERVING_CHECK_PATH", str(tmp_path / "nope2.json"))
+
+    body = client.get("/api/model").json()
+    assert body["evaluation_available"] is False
+    assert body["evaluation"] is None
+    assert body["evaluation_describes_this_configuration"] is None
+    # The serving configuration is still reported - that part needs no artifact.
+    assert body["thresholds"] is not None
+
+
+def test_confusion_matrix_axes_are_in_the_order_the_api_declares(client):
+    """The matrix carries no class labels of its own.
+
+    docs/evaluation_results.json stores `confusion_matrix` as a bare 7x7 array
+    with no `classes` key, and the model card labels its axes with the order
+    /api/model declares. If an evaluation run ever writes a different order, the
+    page would mislabel every cell while looking entirely plausible - so the
+    order is pinned to two independent properties of the same file: each row must
+    sum to that class's recorded support, and each diagonal ratio must reproduce
+    its recorded recall.
+    """
+    body = client.get("/api/model").json()
+    if not body["evaluation_available"]:
+        pytest.skip("no evaluation artifact in this checkout")
+
+    classes = body["classes"]
+    matrix = body["evaluation"]["confusion_matrix"]
+    per_class = body["evaluation"]["per_class"]
+
+    assert len(matrix) == len(classes)
+    for i, cls in enumerate(classes):
+        row_total = sum(matrix[i])
+        assert row_total == per_class[cls]["support"], (
+            f"row {i} sums to {row_total}, but {cls} has support "
+            f"{per_class[cls]['support']} - the axes are not in this order")
+        assert matrix[i][i] / row_total == pytest.approx(per_class[cls]["recall"])
 
 
 def test_health_reports_which_hardening_is_active(client):

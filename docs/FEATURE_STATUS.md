@@ -22,6 +22,8 @@ planned work in the present tense and listed capabilities that were never built.
 | Analytics view | `view-analytics` | Scan counts and class distribution computed client-side from history. |
 | Side-by-side comparison | `renderCompare()` | Two **recorded** scans chosen from history. Shows both stored images, per-class softmax for each with the arithmetic difference B − A, and every persisted field (prediction, confidence, high-risk flag, melanoma alert, p(mel), decision threshold, site, timestamps). Reads `GET /api/history/{id}` and `GET /api/history/{id}/image`. Differences are between two model outputs; nothing about the skin is measured, and the view says so. |
 | Knowledge reference | `view-knowledge` | Static reference cards for the 7 classes. |
+| Case grouping | `case_label` on the record | Scans sharing an operator-typed label are one lesion. Set on the console at scan time (with suggestions from labels already in use) or edited inline in History. The comparison view filters by case, preselects that case's oldest and newest scan, orders A before B chronologically, and attributes the grouping to the operator rather than presenting it as a finding. Cases are derived by grouping, not stored in a table. |
+| Model card | `loadModelCard()` | Publishes the recorded evaluation from `GET /api/model`: accuracy, macro F1, ECE, the melanoma operating point (recall, surfaced, review rate), a per-class table with the live thresholds, and the confusion matrix. Leads with whether those figures were measured under the thresholds actually being served. Every number is read from a file; an unavailable artifact is reported as unavailable. |
 | History search / filter | `history-search-input` | Filters the table by record id, class code or pathology name. |
 | CSV export | history view | Client-side download of the history table, including the anatomic site. |
 | OOD gate readout | `renderOodPanel()` | Shows the statistics the gate measured on this image (`rel_contrast`, `hf_ratio`, `blue_green`) and states plainly whether the thresholds are fitted and whether the feature-space stage ran. |
@@ -51,8 +53,9 @@ These appeared in the previous roadmap. None of them exist in the code:
 - **Progression assessment in the comparison view.** The view differences the two
   *model outputs* — that is arithmetic on stored softmax vectors. It computes nothing
   about the lesion itself: no growth, diameter, pigmentation or border metric exists
-  anywhere in the codebase, and nothing links two records to the same lesion or
-  patient, so no progression claim is available to make. A previous build shipped a
+  anywhere in the codebase. A case label now lets two scans be read as one lesion in
+  sequence, but it is an assertion by whoever typed it, and it changes only who is
+  making the claim of identity — never what is measured. A previous build shipped a
   "differential engine" that
   appeared to compute one: growth percentage, confidence, pigmentation density and
   border irregularity were all derived from `img.src.length % 25` — the length of the
@@ -68,13 +71,35 @@ entry was wrong and has been moved to the implemented table above.)
 
 ## Known issues
 
+- **The threshold file in use was not produced by the tool that is meant to produce
+  it.** `scripts/optimize_thresholds.py` always writes `reported_on`, `rule`,
+  `objective` and `test_metrics`; `models/class_thresholds.json` has none of them, and
+  carries a `precision` field the script never writes. So the command cannot reproduce
+  the artifact every served decision depends on, and `reported_on` — the field showing
+  thresholds were scored on a split separate from the one they were tuned on — is
+  absent, which is the whole reason that script exists. The thresholds may well be
+  sound; nothing in the repository can currently show it. `/api/model` reports this as
+  `threshold_provenance`, and the model card states it above the figures rather than
+  printing `fitted_on` as though it settled the question. Fixable only by re-running
+  the pipeline, which needs HAM10000 re-acquired — the split manifests and
+  `train_config.json` are tracked, so the recipe survives.
+- **The out-of-distribution gate has never been fitted.** Neither
+  `models/ood_config.json` nor `models/ood_stats.npz` exists, so the colour gate runs
+  on provisional thresholds and the feature-space stage does not run at all. Input
+  screening is therefore a colour heuristic on unfitted numbers: it rejects flat
+  fields, pixel noise and non-skin hues, and cannot reject a photograph of another
+  real object — which is why the `cat.jpg` control passes. Surfaced per scan and now
+  on the model card. `scripts/calibrate_ood.py` fits it, and also needs the data.
+
 - **`models/class_thresholds.json` mislabels its own metrics.** The file records
   `fitted_on: "calib+val splits (lesion-disjoint)"`, but the `per_class_metrics` stored
   beside the thresholds are byte-identical to the 1503-sample test evaluation in
   `docs/evaluation_serving_check.json` — so that label describes where the *thresholds*
   were fitted, not where those metrics were measured. The API passes the value through
   as `operating_point.thresholds_fitted_on` and the UI does not restate the split,
-  because the served artifact does not establish it.
+  because the served artifact does not establish it. The model card shows the label
+  verbatim under Serving configuration, so the ambiguity is visible rather than
+  hidden behind a figure.
 
 - **Deleting requires `ADMIN_TOKEN` to be set server-side.** With it unset the API
   returns 403 and the UI reports deletion as disabled, which is the default state.
