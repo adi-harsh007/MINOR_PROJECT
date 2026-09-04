@@ -283,3 +283,76 @@ def test_migration_rehomes_a_path_from_another_platform(uploads, path):
         storage.migrate_absolute_paths(conn)
         assert rows(conn)[9020] == ORPHAN
         conn.execute(text("DELETE FROM diagnostic_sessions"))
+
+
+# ── refusing to sweep in bulk ────────────────────────────────────────────
+# The sweep reclaims the occasional file a crashed request left behind. A sweep
+# that wants to take most of the directory means the database being consulted
+# does not describe this upload directory - DATABASE_URL pointed somewhere new,
+# the database file lost or reset, a throwaway database opened against the real
+# uploads. That last one is not hypothetical: it deleted 154 uploads whose real
+# records still referenced them, at startup, with no error.
+
+def _fill(directory, count, age_seconds=7200):
+    names = []
+    for i in range(count):
+        name = "{:032x}.jpg".format(i)
+        make_file(directory, name, age_seconds=age_seconds)
+        names.append(name)
+    return names
+
+
+def test_sweep_refuses_when_the_database_references_nothing(uploads):
+    """An empty database cannot authorise deleting a directory full of images."""
+    names = _fill(uploads, 40)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        assert storage.sweep_orphans(conn) == 0
+    assert all((uploads / n).exists() for n in names)
+
+
+def test_sweep_refuses_when_most_of_the_directory_is_unreferenced(uploads):
+    """Five rows against fifty files is a mismatch, not fifty-five orphans."""
+    names = _fill(uploads, 50)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        for i, name in enumerate(names[:5]):
+            insert(conn, 9100 + i, name)
+        assert storage.sweep_orphans(conn) == 0
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+    assert all((uploads / n).exists() for n in names)
+
+
+def test_a_lone_stray_file_is_still_housekeeping(uploads):
+    """Magnitude is the signal, not emptiness.
+
+    A fresh install whose first upload crashed has no rows and one stray file,
+    and reclaiming it is exactly what the sweep is for. Refusing on an empty
+    database alone would leak those forever.
+    """
+    make_file(uploads, ORPHAN, age_seconds=7200)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        assert storage.sweep_orphans(conn) == 1
+    assert not (uploads / ORPHAN).exists()
+
+
+def test_bulk_sweep_can_be_forced_once_the_operator_is_certain(uploads,
+                                                              monkeypatch):
+    """The refusal is a guard, not a wall - but it has to be asked for."""
+    names = _fill(uploads, 40)
+    monkeypatch.setattr(storage, "ALLOW_BULK_SWEEP", True)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        assert storage.sweep_orphans(conn) == len(names)
+    assert not any((uploads / n).exists() for n in names)
+
+
+def test_refusing_to_sweep_leaves_every_file_intact(uploads):
+    """Nothing is half-deleted: the decision is made before any file is removed."""
+    names = _fill(uploads, 40)
+    before = {n: (uploads / n).read_bytes() for n in names}
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        storage.sweep_orphans(conn)
+    assert {n: (uploads / n).read_bytes() for n in names} == before

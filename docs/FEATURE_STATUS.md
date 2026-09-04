@@ -71,14 +71,25 @@ entry was wrong and has been moved to the implemented table above.)
 
 ## Known issues
 
-- **Starting against a different database deletes the previous one's uploads.**
-  `init_db()` runs `sweep_orphans()` on every start, and it removes any upload file
-  no row references and older than the one-hour grace period. Pointing `DATABASE_URL`
-  at a second or empty database therefore wipes the images belonging to the first,
-  silently and at startup. Observed for real: a migration check against a temporary
-  database removed 154 uploads whose records still referenced them. The records
-  survive and degrade correctly (`has_image` false, the view says the image is no
-  longer stored), but the files are gone.
+- **The threshold file in use was not produced by the tool that is meant to produce
+  it.** `scripts/optimize_thresholds.py` always writes `reported_on`, `rule`,
+  `objective` and `test_metrics`; `models/class_thresholds.json` has none of them, and
+  carries a `precision` field the script never writes. So the command cannot reproduce
+  the artifact every served decision depends on, and `reported_on` — the field showing
+  thresholds were scored on a split separate from the one they were tuned on — is
+  absent, which is the whole reason that script exists. The thresholds may well be
+  sound; nothing in the repository can currently show it. `/api/model` reports this as
+  `threshold_provenance`, and the model card states it above the figures rather than
+  printing `fitted_on` as though it settled the question. Fixable only by re-running
+  the pipeline, which needs HAM10000 re-acquired — the split manifests and
+  `train_config.json` are tracked, so the recipe survives.
+- **The out-of-distribution gate has never been fitted.** Neither
+  `models/ood_config.json` nor `models/ood_stats.npz` exists, so the colour gate runs
+  on provisional thresholds and the feature-space stage does not run at all. Input
+  screening is therefore a colour heuristic on unfitted numbers: it rejects flat
+  fields, pixel noise and non-skin hues, and cannot reject a photograph of another
+  real object — which is why the `cat.jpg` control passes. Surfaced per scan and now
+  on the model card. `scripts/calibrate_ood.py` fits it, and also needs the data.
 
 - **`models/class_thresholds.json` mislabels its own metrics.** The file records
   `fitted_on: "calib+val splits (lesion-disjoint)"`, but the `per_class_metrics` stored

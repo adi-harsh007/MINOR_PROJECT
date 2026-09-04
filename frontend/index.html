@@ -1297,6 +1297,28 @@
                         <p id="model-provenance-text" class="text-[13px] text-on-surface-variant leading-5">Loading&hellip;</p>
                     </div>
 
+                    <!-- Provenance and gate state. Placed above the figures on
+                         purpose: whether a number can be traced is a property of
+                         the number, and belongs beside it rather than in a
+                         footnote underneath. -->
+                    <section class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                        <div class="panel p-5 flex flex-col gap-2" id="model-provenance-card">
+                            <div class="flex items-center justify-between gap-3">
+                                <h2 class="font-headline-md text-headline-md text-on-surface">Threshold provenance</h2>
+                                <span id="model-provenance-badge" class="chip">&mdash;</span>
+                            </div>
+                            <p class="text-[13px] text-on-surface-variant leading-5" id="model-provenance-body">&mdash;</p>
+                            <p class="font-data-sm text-[12px] text-on-surface-muted" id="model-provenance-fields"></p>
+                        </div>
+                        <div class="panel p-5 flex flex-col gap-2" id="model-ood-card">
+                            <div class="flex items-center justify-between gap-3">
+                                <h2 class="font-headline-md text-headline-md text-on-surface">Input screening</h2>
+                                <span id="model-ood-badge" class="chip">&mdash;</span>
+                            </div>
+                            <p class="text-[13px] text-on-surface-variant leading-5" id="model-ood-body">&mdash;</p>
+                        </div>
+                    </section>
+
                     <!-- Headline figures -->
                     <section class="grid grid-cols-2 xl:grid-cols-4 gap-3" id="model-headline">
                         <div class="panel p-4">

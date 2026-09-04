@@ -101,6 +101,11 @@ default — they are disabled unless deliberately enabled.
 
 There is no server-side PDF export endpoint. Report export is client-side only.
 
+`/api/model` also reports `threshold_provenance` (whether
+`models/class_thresholds.json` carries the fields `scripts/optimize_thresholds.py`
+writes, and whether it records fit and report splits separately) and `ood_gate`
+(whether the screening thresholds and feature-space stage have been fitted).
+
 `/api/model` degrades rather than guesses: with `EVALUATION_PATH` or
 `SERVING_CHECK_PATH` absent it reports `evaluation_available: false` and
 `evaluation_describes_this_configuration: null`, and the interface says so

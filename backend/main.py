@@ -264,7 +264,8 @@ def model_card():
     view should not pull it into memory. The thresholds come from the same file
     the predictor reads.
     """
-    from .ml_engine import decision_config, read_threshold_file
+    from .ml_engine import decision_config, read_threshold_file, threshold_provenance
+    from .ood import OOD_CONFIG_PATH, OOD_STATS_PATH
 
     classes = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
 
@@ -320,6 +321,17 @@ def model_card():
         # than reinterpreted here.
         "threshold_metrics": threshold_metrics,
         "thresholds_fitted_on": thresholds_fitted_on,
+        # Whether the file those thresholds and metrics came from can be traced
+        # to the tool meant to produce it. The card states this rather than
+        # printing `fitted_on` as though it settled the question.
+        "threshold_provenance": threshold_provenance(THRESHOLD_PATH),
+        # The input screening the interface advertises on every scan. Reported
+        # here too, because "the safety gate has never been fitted" belongs on
+        # the page describing what this model is, not only in a per-scan panel.
+        "ood_gate": {
+            "thresholds_fitted": os.path.exists(OOD_CONFIG_PATH),
+            "feature_stage_fitted": os.path.exists(OOD_STATS_PATH),
+        },
         "evaluation": evaluation,
         "evaluation_available": evaluation is not None,
         "evaluation_describes_this_configuration": describes_this_configuration,

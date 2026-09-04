@@ -2119,6 +2119,74 @@ function renderModelProvenance(card) {
         "server has the evaluation but not the record of which thresholds it was measured under.";
 }
 
+// Can the thresholds in use be traced to the tool that is supposed to produce
+// them? The answer conditions every figure on this page, so it sits above them.
+function renderModelThresholdProvenance(card) {
+    const p = card.threshold_provenance || {};
+    const badge = document.getElementById("model-provenance-badge");
+    const body = document.getElementById("model-provenance-body");
+    const fields = document.getElementById("model-provenance-fields");
+    if (!badge || !body || !fields) return;
+
+    if (p.produced_by_pipeline && p.splits_shown_separate) {
+        badge.className = "chip chip--low";
+        badge.textContent = "Traceable";
+        body.textContent =
+            `Written by scripts/optimize_thresholds.py, fitted on ${p.fitted_on} and ` +
+            `reported on ${p.reported_on} — separate splits, as that tool requires.`;
+        fields.textContent = "";
+        return;
+    }
+
+    badge.className = "chip chip--mid";
+    badge.textContent = "Unverifiable";
+    body.textContent = p.readable
+        ? "This file was not written by scripts/optimize_thresholds.py, so that command " +
+          "will not reproduce it — and it records no `reported_on`, which is the field " +
+          "showing the thresholds were scored on a split separate from the one they were " +
+          "tuned on. That separation may well have been kept; nothing here can confirm it, " +
+          "so the figures below should be read as unverified rather than as measured under " +
+          "a known protocol."
+        : "The threshold file could not be read, so nothing about its provenance is known.";
+
+    const missing = p.missing_fields || [];
+    fields.textContent = missing.length
+        ? `Missing: ${missing.join(", ")}${p.fitted_on ? ` · fitted_on: ${p.fitted_on}` : ""}`
+        : "";
+}
+
+// The gate the console advertises on every scan. Its state belongs on the page
+// describing what this model is, not only in a per-scan panel.
+function renderModelOodState(card) {
+    const g = card.ood_gate || {};
+    const badge = document.getElementById("model-ood-badge");
+    const body = document.getElementById("model-ood-body");
+    if (!badge || !body) return;
+
+    const both = g.thresholds_fitted && g.feature_stage_fitted;
+    badge.className = "chip " + (both ? "chip--low" : "chip--mid");
+    badge.textContent = both ? "Fitted" : "Not fitted";
+
+    if (both) {
+        body.textContent =
+            "Colour thresholds fitted to data and the feature-space stage active. " +
+            "Both stages run on every scan.";
+        return;
+    }
+
+    const parts = [];
+    parts.push(g.thresholds_fitted
+        ? "Colour thresholds: fitted."
+        : "Colour thresholds: provisional defaults, never fitted.");
+    parts.push(g.feature_stage_fitted
+        ? "Feature-space stage: active."
+        : "Feature-space stage: never fitted, so it does not run at all.");
+    parts.push("Screening is therefore a colour heuristic on unfitted numbers: it " +
+               "rejects flat fields, pixel noise and non-skin hues, and cannot reject a " +
+               "photograph of another real object. Run scripts/calibrate_ood.py to fit it.");
+    body.textContent = parts.join(" ");
+}
+
 function renderModelHeadline(evaluation) {
     if (!evaluation) {
         ["model-accuracy", "model-macro-f1", "model-mel-recall", "model-ece"]
@@ -2308,6 +2376,8 @@ async function loadModelCard() {
     state.modelCard = card;
 
     renderModelProvenance(card);
+    renderModelThresholdProvenance(card);
+    renderModelOodState(card);
     renderModelHeadline(card.evaluation);
     renderModelOperatingPoint(card.evaluation);
     renderModelPerClass(card);

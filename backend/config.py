@@ -45,6 +45,11 @@ DEFAULT_READOUT = os.getenv("READOUT", "sigmoid")
 # off. Refuse by default; set ALLOW_UNCALIBRATED=1 to serve anyway.
 ALLOW_UNCALIBRATED = os.getenv("ALLOW_UNCALIBRATED", "").strip().lower() in {"1", "true", "yes"}
 
+# The startup sweep refuses to delete uploads in bulk, because a sweep that large
+# means the database does not describe this upload directory rather than that the
+# files are junk. Set ALLOW_BULK_SWEEP=1 to override, having checked DATABASE_URL.
+ALLOW_BULK_SWEEP = os.getenv("ALLOW_BULK_SWEEP", "").strip().lower() in {"1", "true", "yes"}
+
 # Inference resolution. Must match configs/default.yaml img_size in the training
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))

@@ -877,6 +877,67 @@ def test_model_card_reports_the_serving_configuration(client):
     assert body["checkpoint"]["loaded"] is False or body["checkpoint"]["present"]
 
 
+def test_model_card_reports_whether_thresholds_can_be_traced(client):
+    """The figures are only as good as the file behind them.
+
+    scripts/optimize_thresholds.py always writes `reported_on` - the field
+    showing thresholds were scored on a split separate from the one they were
+    tuned on, which is the entire reason that tool exists. A file without it
+    cannot demonstrate the separation, so the card has to say so rather than
+    print a confident `fitted_on` beside the numbers.
+    """
+    p = client.get("/api/model").json()["threshold_provenance"]
+
+    assert p["readable"] is True
+    assert isinstance(p["produced_by_pipeline"], bool)
+    assert isinstance(p["missing_fields"], list)
+    # Traceable means both halves recorded, and different.
+    if p["produced_by_pipeline"]:
+        assert p["reported_on"] and p["reported_on"] != p["fitted_on"]
+        assert p["splits_shown_separate"] is True
+    else:
+        assert p["missing_fields"], "not from the pipeline, yet nothing missing?"
+        assert p["splits_shown_separate"] is False
+
+
+def test_threshold_provenance_detects_a_file_from_the_pipeline(tmp_path):
+    """The check must recognise a good file, not just reject the current one."""
+    import json
+    from backend.ml_engine import threshold_provenance
+
+    good = tmp_path / "class_thresholds.json"
+    good.write_text(json.dumps({
+        "fitted_on": "/data/calib", "reported_on": "/data/test",
+        "readout": "softmax", "rule": "argmax(probability - threshold)",
+        "objective": "macro_f1", "class_thresholds": {"mel": 0.0},
+        "test_metrics": {"accuracy": 0.8, "macro_f1": 0.7},
+        "per_class_metrics": {"mel": {"threshold": 0.0, "f1": 0.6, "recall": 0.8}},
+    }), encoding="utf-8")
+
+    p = threshold_provenance(str(good))
+    assert p["produced_by_pipeline"] is True
+    assert p["missing_fields"] == []
+    assert p["splits_shown_separate"] is True
+
+    # Fitted and reported on the same split is the failure the tool guards
+    # against, and it must not read as traceable.
+    same = tmp_path / "same.json"
+    same.write_text(json.dumps({
+        "fitted_on": "/data/test", "reported_on": "/data/test",
+        "rule": "r", "objective": "o", "test_metrics": {},
+    }), encoding="utf-8")
+    assert threshold_provenance(str(same))["splits_shown_separate"] is False
+
+    assert threshold_provenance(str(tmp_path / "absent.json"))["readable"] is False
+
+
+def test_model_card_reports_the_ood_gate_state(client):
+    """The screening the console advertises belongs on the page describing the model."""
+    gate = client.get("/api/model").json()["ood_gate"]
+    assert set(gate) == {"thresholds_fitted", "feature_stage_fitted"}
+    assert all(isinstance(v, bool) for v in gate.values())
+
+
 def test_model_card_says_whether_the_evaluation_matches_what_is_served(client):
     """The whole point: numbers measured under other thresholds are not ours."""
     body = client.get("/api/model").json()

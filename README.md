@@ -176,6 +176,11 @@ Verified against the source. Anything not listed here does not exist.
 - `GET /api/history/{id}/image` — the stored upload for a session.
 - `PATCH /api/history/{id}` — set, change or clear a scan's case label.
 - `GET /api/cases` — every case label in use, with scan counts and date range.
+
+`ALLOW_BULK_SWEEP=1` overrides the startup sweep's refusal to delete uploads in
+bulk. It refuses when the database references nothing, or when more than a
+quarter of the upload directory is unreferenced, because a sweep that large means
+the database does not describe that directory — check `DATABASE_URL` first.
 - `DELETE /api/history/all` and `DELETE /api/history/{id}` — both require `X-Admin-Token`
   and are disabled (403) while `ADMIN_TOKEN` is unset.
 - `require_admin(x_admin_token)` — the guard for both delete routes.
