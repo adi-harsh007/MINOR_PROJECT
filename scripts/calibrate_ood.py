@@ -100,6 +100,21 @@ def describe(name, values):
         np.percentile(values, 99), values.max()))
 
 
+# Below this, a held-out false-reject rate is too noisy to mean anything.
+MIN_HOLDOUT = 25
+
+
+def split_holdout(features, fraction, seed=0):
+    """Split into (holdout, fit). Deterministic, so a rerun says the same thing."""
+    n = features.shape[0]
+    n_holdout = int(round(n * fraction))
+    if n_holdout <= 0:
+        return features[:0], features
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(n)
+    return features[order[:n_holdout]], features[order[n_holdout:]]
+
+
 def fit_mahalanobis(features, percentile):
     """Mean, inverse covariance (shrunk), and the distance cutoff."""
     mean = features.mean(axis=0)
@@ -128,6 +143,17 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--dry-run", action="store_true",
                         help="Report measurements without writing any files.")
+    parser.add_argument("--holdout-fraction", type=float, default=0.2,
+                        help="Fraction of --data-dir held back from fitting and "
+                             "used to measure the real false-reject rate "
+                             "(default 0.2).")
+    parser.add_argument("--max-false-reject", type=float, default=0.05,
+                        help="Refuse to install a gate that rejects more than "
+                             "this fraction of HELD-OUT in-distribution images "
+                             "(default 0.05).")
+    parser.add_argument("--force", action="store_true",
+                        help="Write even if held-out validation fails. You are "
+                             "asserting you know why.")
     args = parser.parse_args()
 
     if not os.path.isdir(args.data_dir):
@@ -161,6 +187,43 @@ def main():
     thresholds["min_rel_contrast"] = float(np.percentile(rel, lo))
     thresholds["max_hf_ratio"] = float(np.percentile(hf, hi))
     thresholds["max_blue_green"] = float(max(np.percentile(bg, hi), 0.30))
+
+    # ── Feature-space stage: fit on a subset, judge on the rest ───────────
+    #
+    # Mahalanobis distance needs a covariance estimated from many more samples
+    # than there are dimensions. EfficientNet-B3 produces 1536-dimensional
+    # features, so the covariance has ~1.18 million free parameters; fitted from
+    # a few dozen images it is rank-deficient, the pseudo-inverse explodes along
+    # every unconstrained direction, and the resulting gate rejects essentially
+    # any image it did not see during fitting.
+    #
+    # This was measured, not assumed: fitted on 20 of the 21 bundled samples, the
+    # gate rejected the held-out lesion every single time - 21/21, at distances
+    # around 1e6 against a cutoff of 18.
+    n_fit, n_dim = features.shape
+    if n_fit <= n_dim:
+        print("\nWARNING: {} images for {} feature dimensions. The covariance is "
+              "rank-deficient and the feature-space gate will reject almost "
+              "everything. Several times as many images as dimensions are "
+              "needed.".format(n_fit, n_dim))
+
+    holdout_features, fit_features = split_holdout(features, args.holdout_fraction)
+    if holdout_features.shape[0] >= MIN_HOLDOUT:
+        _, inv_holdout, cutoff_holdout, _ = fit_mahalanobis(
+            fit_features, args.percentile)
+        mean_holdout = fit_features.mean(axis=0)
+        centered = holdout_features - mean_holdout
+        holdout_dists = np.einsum("ij,jk,ik->i", centered, inv_holdout, centered)
+        holdout_false_reject = float((holdout_dists > cutoff_holdout).mean())
+        print("\nHeld-out validation ({} fitted / {} held out)".format(
+            fit_features.shape[0], holdout_features.shape[0]))
+        print("  in-distribution images wrongly rejected: {:.1f}%".format(
+            100.0 * holdout_false_reject))
+    else:
+        holdout_false_reject = None
+        print("\nHeld-out validation: skipped, fewer than {} images available. "
+              "The numbers below are measured on the data they were fitted to "
+              "and describe memorisation, not generalisation.".format(MIN_HOLDOUT))
 
     mean, inv_cov, mahal_threshold, id_dists = fit_mahalanobis(features, args.percentile)
     thresholds["max_mahalanobis"] = mahal_threshold
@@ -197,6 +260,33 @@ def main():
     if args.dry_run:
         print("\nDry run: nothing written.")
         return
+
+    # ── Refuse to install a gate that rejects real lesions ────────────────
+    #
+    # This is the safety property the script previously lacked. It reported a
+    # false-reject rate computed on the images it had just fitted to - where the
+    # cutoff is by construction the 99th percentile of those very distances - so
+    # a gate that rejected 100% of unseen lesions still reported ~1% and was
+    # written out regardless. An OOD gate that rejects everything scores a
+    # perfect OOD rejection rate, which is exactly why that number cannot be
+    # read on its own.
+    if holdout_false_reject is None:
+        print("\nREFUSING TO WRITE: not enough images to validate on data that "
+              "was held out of fitting ({} needed). A gate that cannot be "
+              "validated must not be installed; every scan it wrongly rejects "
+              "is a lesion nobody looks at.".format(MIN_HOLDOUT))
+        if not args.force:
+            raise SystemExit(2)
+        print("Proceeding anyway because --force was given.")
+    elif holdout_false_reject > args.max_false_reject:
+        print("\nREFUSING TO WRITE: this gate rejects {:.1f}% of held-out "
+              "in-distribution images, above the {:.1f}% budget. Installing it "
+              "would reject real lesions.".format(
+                  100.0 * holdout_false_reject, 100.0 * args.max_false_reject))
+        print("Fit on more data, or raise --max-false-reject deliberately.")
+        if not args.force:
+            raise SystemExit(2)
+        print("Proceeding anyway because --force was given.")
 
     models_dir = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "models")

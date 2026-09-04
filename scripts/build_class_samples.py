@@ -13,7 +13,6 @@ any panel can be traced back to the dataset row it came from.
 
 import argparse
 import os
-import sys
 
 CLASSES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
 FULL_NAME = {

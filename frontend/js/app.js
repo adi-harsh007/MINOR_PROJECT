@@ -436,6 +436,39 @@ function renderSampleGallery() {
     });
 }
 
+// The sample cards show each case's real HAM10000 `localization` value ("Back",
+// "Trunk", "Face"...). The API only accepts the six sites the tagger offers and
+// silently discards anything else, so a sample previously recorded no site at all
+// and cleared every tag button. This maps the dataset vocabulary onto the API's.
+const HAM_SITE_TO_API_SITE = {
+    "Back": "Posterior Torso",
+    "Trunk": "Anterior Torso",
+    "Abdomen": "Anterior Torso",
+    "Chest": "Anterior Torso",
+    "Face": "Head & Neck",
+    "Scalp": "Head & Neck",
+    "Neck": "Head & Neck",
+    "Ear": "Head & Neck",
+    "Upper Extremity": "Upper Extremities",
+    "Hand": "Upper Extremities",
+    "Lower Extremity": "Lower Extremities",
+    "Foot": "Lower Extremities",
+    "Acral": "Palms & Soles"
+};
+
+function toApiSite(localization) {
+    if (!localization) return null;
+    if (ANATOMIC_SITES.includes(localization)) return localization;
+    return HAM_SITE_TO_API_SITE[localization] || null;
+}
+
+// Mirrors ANATOMIC_SITES in backend/config.py. Anything outside this list is
+// discarded server-side, so the client must not invent values.
+const ANATOMIC_SITES = [
+    "Head & Neck", "Anterior Torso", "Posterior Torso",
+    "Upper Extremities", "Lower Extremities", "Palms & Soles"
+];
+
 function loadSampleImage(sampleInput) {
     let sample = sampleInput;
     if (typeof sampleInput === "string") {
@@ -449,11 +482,14 @@ function loadSampleImage(sampleInput) {
     state.selectedFile = null;
     setConsoleViewportImage(sample.url);
 
-    // Synchronize anatomic site selection UI & state
-    if (sample.site) {
-        state.selectedAnatomicSite = sample.site;
+    // Synchronize anatomic site selection UI & state. The dataset's own wording
+    // is translated to the six values the API accepts; an unmappable site (the
+    // non-skin control) leaves the current selection alone rather than clearing it.
+    const apiSite = toApiSite(sample.site);
+    if (apiSite) {
+        state.selectedAnatomicSite = apiSite;
         document.querySelectorAll(".anatomic-tag").forEach(b => {
-            if (b.getAttribute("data-site") === sample.site) {
+            if (b.getAttribute("data-site") === apiSite) {
                 b.className = "anatomic-tag active px-3 py-2 bg-primary/10 border border-primary/30 text-primary rounded-lg font-data-sm text-data-sm hover:bg-primary/20 transition-all text-left font-bold";
             } else {
                 b.className = "anatomic-tag px-3 py-2 bg-surface-container border border-outline-variant/20 text-on-surface-variant rounded-lg font-data-sm text-data-sm hover:bg-surface-container-high transition-all text-left";
@@ -636,19 +672,97 @@ function renderResultsView(data) {
         }).join('');
     }
 
-    // 5. Populate OOD Gatekeeper Metadata
-    if (data.ood_metrics) {
-        const skinHue = document.getElementById("ood-skin-hue");
-        const bgRatio = document.getElementById("ood-bg-ratio");
-        const statusBadge = document.getElementById("ood-status-badge");
+    // 5. Clinical summary — derived from this result, never a fixed string.
+    //    A hardcoded "immediate biopsy recommended" previously appeared on every
+    //    result, including benign ones, directly contradicting the banner above it.
+    const summaryEl = document.getElementById("res-clinical-summary");
+    if (summaryEl) summaryEl.textContent = buildClinicalSummary(data, meta);
 
-        if (skinHue) skinHue.textContent = data.ood_metrics.skin_hue_mean ? data.ood_metrics.skin_hue_mean.toFixed(2) : "0.45";
-        if (bgRatio) bgRatio.textContent = data.ood_metrics.blue_green_ratio ? data.ood_metrics.blue_green_ratio.toFixed(2) : "0.92";
-        if (statusBadge) {
-            const isPassed = !data.is_out_of_distribution;
-            statusBadge.className = `px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${isPassed ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'}`;
-            statusBadge.textContent = isPassed ? "QUALIFIED SCAN" : "OOD WARNING";
-        }
+    // 6. OOD gate — the statistics the gate actually measured on this image, and
+    //    the honest state of its calibration. Every value here comes from the API;
+    //    if the API did not send it, nothing is displayed.
+    renderOodPanel(data);
+}
+
+// Wording is derived from the predicted class and the melanoma alert. It states
+// what the system found and what that does not rule out; it does not issue
+// treatment instructions.
+function buildClinicalSummary(data, meta) {
+    const pct = (data.confidence * 100).toFixed(1);
+    const name = meta.name;
+    const parts = [];
+
+    if (data.is_high_risk) {
+        parts.push(
+            `The model's leading classification is ${name} at ${pct}% confidence, ` +
+            `which falls in the group flagged as high risk (melanoma, basal cell carcinoma, ` +
+            `actinic keratosis). Specialist dermatological assessment is indicated.`);
+    } else {
+        parts.push(
+            `The model's leading classification is ${name} at ${pct}% confidence, ` +
+            `a class not flagged as high risk.`);
+    }
+
+    if (data.melanoma_alert) {
+        const mp = data.melanoma_probability != null
+            ? ` (p(mel) ${(data.melanoma_probability * 100).toFixed(1)}%)` : "";
+        parts.push(
+            `The independent melanoma alert channel fired for this scan${mp}: melanoma is ` +
+            `not excluded regardless of the leading class, and the scan is flagged for review.`);
+    }
+
+    parts.push(
+        `Measured melanoma recall for this model is 0.800 on a lesion-disjoint hold-out — ` +
+        `about one melanoma in five is missed by the prediction itself. A result that is not ` +
+        `flagged is not a clinical clearance.`);
+
+    return parts.join(" ");
+}
+
+function renderOodPanel(data) {
+    const badge = document.getElementById("ood-status-badge");
+    const statusText = document.getElementById("ood-status-text");
+    const note = document.getElementById("ood-calibration-note");
+    const cells = {
+        "ood-rel-contrast": "rel_contrast",
+        "ood-hf-ratio": "hf_ratio",
+        "ood-blue-green": "blue_green"
+    };
+
+    const m = data.ood_metrics;
+    for (const [elId, key] of Object.entries(cells)) {
+        const el = document.getElementById(elId);
+        if (!el) continue;
+        el.textContent = (m && typeof m[key] === "number") ? m[key].toFixed(3) : "—";
+    }
+
+    // The scan reached this view, so stage 1 accepted it. That is all that can be
+    // claimed — and only stage 1 ran unless the feature-space stage is fitted.
+    if (badge) {
+        badge.textContent = m ? "STAGE 1 PASSED" : "NOT REPORTED";
+        badge.className = "px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase " +
+            (m ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+               : "bg-surface-container text-on-surface-variant border border-outline-variant/40");
+    }
+    if (statusText) {
+        statusText.textContent = m
+            ? "Image statistics fell inside the accepted range, so the colour gate did not reject this scan. " +
+              "The colour gate rejects flat fields, pixel noise and non-skin hues; it cannot reject a " +
+              "photograph of another real object."
+            : "The server did not report out-of-distribution metrics for this scan.";
+    }
+    if (note) {
+        const bits = [];
+        bits.push(data.ood_calibrated
+            ? "Gate thresholds: fitted to data."
+            : "Gate thresholds: provisional defaults, not yet fitted (scripts/calibrate_ood.py).");
+        bits.push(data.ood_feature_stage_active
+            ? "Feature-space stage: active."
+            : "Feature-space stage: not fitted, did not run.");
+        note.textContent = bits.join(" ");
+        note.className = "text-[10px] font-data-sm " +
+            ((data.ood_calibrated && data.ood_feature_stage_active)
+                ? "text-on-surface-variant" : "text-amber-400");
     }
 }
 
@@ -658,6 +772,17 @@ function downloadClinicalReport() {
     if (!reportElement) {
         toast("No diagnostic results available to export.", "warning");
         return;
+    }
+
+    // The export button lives in the always-visible top bar, so it can be pressed
+    // with no scan run and the results panel hidden. html2pdf would then render a
+    // blank or placeholder page and present it as a clinical report.
+    if (!state.latestResult) {
+        toast("Run a scan before exporting a report.", "warning");
+        return;
+    }
+    if (reportElement.classList.contains("hidden")) {
+        navigate("view-results", state.latestResult);
     }
 
     toast("Generating Clinical Consultation PDF Report...", "info");
@@ -737,9 +862,14 @@ function renderHistoryTable(records) {
     }
 
     tbody.innerHTML = records.map(log => {
+        // The API sends UTC with an explicit offset; render both halves in the
+        // viewer's local zone. Previously the date came from toISOString() (UTC)
+        // and the time from toTimeString() (local), so around midnight a row
+        // could show one day's date beside the next day's time.
         const dt = new Date(log.created_at);
-        const dateStr = dt.toISOString().slice(0, 10);
-        const timeStr = dt.toTimeString().slice(0, 5);
+        const pad = (n) => String(n).padStart(2, "0");
+        const dateStr = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+        const timeStr = `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
         const meta = PATHOLOGY_META[log.prediction] || { name: log.prediction.toUpperCase() };
         const confPct = (log.confidence * 100).toFixed(1);
         const isHigh = log.is_high_risk;
@@ -992,28 +1122,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnExportCSV = document.getElementById("btn-export-csv");
     if (btnExportCSV) btnExportCSV.addEventListener("click", exportHistoryCSV);
 
-    // 12. Compare Mode Overlay & Dual Viewport Sync Engine
-    const btnToggleDiff = document.getElementById("btn-toggle-diff");
-    const diffOverlay = document.getElementById("diffOverlay");
-    const canvasDiffOverlay = document.getElementById("canvas-diff-overlay");
-
-    if (btnToggleDiff) {
-        btnToggleDiff.addEventListener("click", () => {
-            const isHidden = diffOverlay ? diffOverlay.classList.contains("hidden") : true;
-            if (isHidden) {
-                if (diffOverlay) diffOverlay.classList.remove("hidden");
-                if (canvasDiffOverlay) canvasDiffOverlay.classList.remove("hidden");
-                btnToggleDiff.classList.add("bg-primary", "text-on-primary");
-                toast("Delta overlay heatmap enabled", "info");
-            } else {
-                if (diffOverlay) diffOverlay.classList.add("hidden");
-                if (canvasDiffOverlay) canvasDiffOverlay.classList.add("hidden");
-                btnToggleDiff.classList.remove("bg-primary", "text-on-primary");
-                toast("Delta overlay heatmap disabled", "info");
-            }
-        });
-    }
-
+    // 12. Compare Mode Dual Viewport Sync
     const syncToggle = document.getElementById("syncToggle");
     const syncThumb = document.getElementById("syncThumb");
     let syncActive = true;
@@ -1071,13 +1180,22 @@ document.addEventListener("DOMContentLoaded", () => {
         const imgEl = document.getElementById(isA ? "img-compare-left" : "img-compare-right");
         const tagEl = document.getElementById(isA ? "tag-compare-a" : "tag-compare-b");
         const dateEl = document.getElementById(isA ? "compare-a-date" : "compare-b-date");
+        const phEl = document.getElementById(isA ? "compare-a-placeholder" : "compare-b-placeholder");
 
-        if (imgEl) imgEl.src = imageSrc;
-        if (tagEl && labelText) tagEl.textContent = labelText;
+        if (imgEl) {
+            imgEl.src = imageSrc;
+            imgEl.classList.remove("hidden");
+        }
+        if (phEl) phEl.classList.add("hidden");
+        if (tagEl && labelText) {
+            tagEl.textContent = labelText;
+            tagEl.classList.remove("hidden");
+        }
         if (dateEl) dateEl.textContent = dateText || new Date().toISOString().split('T')[0];
 
+        // The label is the source of the image, not a diagnosis. Nothing here is
+        // measured or compared: this view only places two scans side by side.
         toast(`Loaded image into Scan ${slot}`, "success");
-        runDifferentialAnalysis();
     }
 
     function handleCompareFileUpload(slot, file) {
@@ -1189,115 +1307,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 setTimeout(syncActiveScanToB, 100);
             }
         });
-    }
-
-    // 14. AI Differential Comparison Engine
-    const btnRunDifferential = document.getElementById("btn-run-differential");
-
-    function runDifferentialAnalysis() {
-        const imgA = document.getElementById("img-compare-left");
-        const imgB = document.getElementById("img-compare-right");
-
-        if (!imgA || !imgB || !imgA.src || !imgB.src) {
-            toast("Please load both Scan A and Scan B before running comparison", "warning");
-            return;
-        }
-
-        toast("Running AI differential lesion comparison...", "info");
-
-        const badge = document.getElementById("compare-status-badge");
-        const desc = document.getElementById("compare-status-desc");
-        const growthVal = document.getElementById("compare-growth-val");
-        const confVal = document.getElementById("compare-conf-val");
-        const pigmA = document.getElementById("compare-a-pigm");
-        const borderA = document.getElementById("compare-a-border");
-        const pigmB = document.getElementById("compare-b-pigm");
-        const borderB = document.getElementById("compare-b-border");
-
-        if (badge) {
-            badge.textContent = "PROCESSING AI DIFFERENTIAL DELTAS...";
-            badge.className = "px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary/20 text-primary border border-primary/40 animate-pulse";
-        }
-
-        setTimeout(() => {
-            const strA = imgA.src.length;
-            const strB = imgB.src.length;
-            const isSame = imgA.src === imgB.src;
-
-            let growthPercent = isSame ? 0 : Math.round(((strB % 25) - (strA % 15)) * 1.2 + 8.4);
-            if (growthPercent < -15) growthPercent = 3.2;
-
-            const conf = Math.round(92.4 + (strA % 70) * 0.1);
-            const baselinePigm = Math.round(35 + (strA % 25));
-            const baselineBorder = ((strA % 15) * 0.1 + 1.8).toFixed(1);
-
-            const pigmDelta = isSame ? 0 : Math.round((strB % 18) - (strA % 10));
-            const borderDelta = isSame ? 0 : (((strB % 10) - (strA % 8)) * 0.2 + 0.5).toFixed(1);
-
-            if (pigmA) pigmA.textContent = `${baselinePigm}%`;
-            if (borderA) borderA.textContent = `${baselineBorder} Index`;
-
-            if (pigmB) pigmB.textContent = isSame ? `${baselinePigm}% (Identical)` : `${pigmDelta >= 0 ? '+' : ''}${pigmDelta}% Intensity Shift`;
-            if (borderB) borderB.textContent = isSame ? `${baselineBorder} Index` : `${borderDelta >= 0 ? '+' : ''}${borderDelta} Delta Index`;
-
-            if (growthVal) growthVal.textContent = isSame ? "0.0%" : `${growthPercent >= 0 ? '+' : ''}${growthPercent.toFixed(1)}%`;
-            if (confVal) confVal.textContent = `${conf.toFixed(1)}%`;
-
-            if (badge && desc) {
-                if (isSame) {
-                    badge.textContent = "IDENTICAL SCANS LOADED";
-                    badge.className = "px-2.5 py-0.5 rounded-full text-xs font-bold bg-surface-container-high text-on-surface-variant border border-outline-variant/40";
-                    desc.textContent = "Scan A and Scan B are identical image files. No morphological difference detected.";
-                } else if (growthPercent > 10 || pigmDelta > 8) {
-                    badge.textContent = "HIGH RISK PROGRESSION DETECTED";
-                    badge.className = "px-2.5 py-0.5 rounded-full text-xs font-bold bg-error/20 text-error border border-error/40";
-                    desc.textContent = `Lesion exhibits significant structural expansion (${growthPercent.toFixed(1)}% area change) and elevated melanin density. Recommending urgent biopsy evaluation.`;
-                } else if (growthPercent > 3 || pigmDelta > 2) {
-                    badge.textContent = "MODERATE MORPHOLOGICAL SHIFT";
-                    badge.className = "px-2.5 py-0.5 rounded-full text-xs font-bold bg-tertiary/20 text-tertiary border border-tertiary/40";
-                    desc.textContent = `Minor structural enlargement (${growthPercent.toFixed(1)}% area) observed. Recommending 60-day short interval follow-up scan.`;
-                } else {
-                    badge.textContent = "STABLE LESION MORPHOLOGY";
-                    badge.className = "px-2.5 py-0.5 rounded-full text-xs font-bold bg-secondary/20 text-secondary border border-secondary/40";
-                    desc.textContent = "No statistically significant alteration in lesion perimeter, border regularity, or pigmentation density over scan interval.";
-                }
-            }
-
-            renderCanvasDiffOverlay(imgA, imgB);
-            toast("Differential comparison completed successfully", "success");
-        }, 600);
-    }
-
-    function renderCanvasDiffOverlay(imgA, imgB) {
-        const canvas = document.getElementById("canvas-diff-overlay");
-        if (!canvas) return;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-
-        canvas.width = 512;
-        canvas.height = 512;
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        ctx.strokeStyle = "rgba(255, 68, 68, 0.85)";
-        ctx.lineWidth = 3;
-        ctx.shadowColor = "rgba(255, 68, 68, 0.9)";
-        ctx.shadowBlur = 10;
-
-        ctx.beginPath();
-        ctx.ellipse(256, 256, 110, 85, Math.PI / 6, 0, 2 * Math.PI);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(255, 68, 68, 0.2)";
-        ctx.fill();
-
-        ctx.fillStyle = "#ff4444";
-        ctx.font = "bold 13px system-ui, sans-serif";
-        ctx.fillText("DELTA EXPANSION +14.2%", 180, 260);
-    }
-
-    if (btnRunDifferential) {
-        btnRunDifferential.addEventListener("click", runDifferentialAnalysis);
     }
 
     // Initial view load

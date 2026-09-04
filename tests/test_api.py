@@ -1,6 +1,7 @@
 """Upload validation, admin guards, and history behaviour."""
 
 import io
+import re
 import os
 
 import numpy as np
@@ -267,3 +268,274 @@ def test_temperature_is_applied_to_confidence():
 def test_history_limit_is_bounded(client):
     assert client.get("/api/history?limit=0").status_code == 422
     assert client.get("/api/history?limit=500").status_code == 422
+
+
+# ── serving-configuration guards ─────────────────────────────────────────
+# Each of these locks down a defect where the server would quietly serve
+# something other than the configuration its published metrics describe.
+
+def test_refuses_to_serve_without_decision_calibration(monkeypatch):
+    """A missing calibration file must be fatal, not a silent fallback.
+
+    Falling through to the config defaults means sigmoid instead of softmax, no
+    temperature scaling, and the melanoma alert channel switched off - a
+    different decision rule from the measured one, with nothing downstream able
+    to tell.
+    """
+    import backend.ml_engine as ml_engine
+
+    monkeypatch.setattr(ml_engine, "CALIBRATION_PATH", "models/__absent__.json")
+    monkeypatch.setattr(ml_engine, "ALLOW_UNCALIBRATED", False)
+
+    with pytest.raises(RuntimeError, match="calibration is unavailable"):
+        ml_engine.SkinCancerPredictor()
+
+
+@pytest.mark.requires_model
+def test_uncalibrated_serving_requires_an_explicit_opt_in(monkeypatch):
+    """ALLOW_UNCALIBRATED is the only way through, and the state stays visible."""
+    import backend.ml_engine as ml_engine
+
+    monkeypatch.setattr(ml_engine, "CALIBRATION_PATH", "models/__absent__.json")
+    monkeypatch.setattr(ml_engine, "ALLOW_UNCALIBRATED", True)
+
+    predictor = ml_engine.SkinCancerPredictor()
+    assert predictor.calibration_loaded is False
+
+
+def test_health_reports_the_decision_rule_in_force(client):
+    """The decision layer must be inspectable without running a scan."""
+    body = client.get("/api/health").json()
+
+    decision = body["decision_layer"]
+    assert decision["calibration_loaded"] is True
+    assert decision["readout"] in {"softmax", "sigmoid"}
+    assert decision["temperature"] > 0
+    assert "decision_layer_uncalibrated" not in body["degraded"]
+
+
+def test_health_reports_ood_gate_state(client):
+    """An unfitted OOD gate must be visible, not implied to be working."""
+    body = client.get("/api/health").json()
+
+    ood = body["ood_gate"]
+    assert set(ood) == {"thresholds_fitted", "feature_stage_fitted"}
+    if not ood["feature_stage_fitted"]:
+        assert "ood_feature_stage_inactive" in body["degraded"]
+
+
+def test_inference_threads_do_not_oversubscribe_the_cpu(client):
+    """Concurrent scans must not each claim a full-width torch thread pool."""
+    import os
+    import torch
+
+    body = client.get("/api/health").json()["concurrency"]
+    total = body["max_concurrent_inference"] * torch.get_num_threads()
+    assert torch.get_num_threads() == body["torch_num_threads"]
+    assert total <= (os.cpu_count() or 2)
+
+
+def test_internal_errors_do_not_leak_exception_text(client, monkeypatch, caplog):
+    """A 500 must carry a reference, not the exception message.
+
+    /api/analyze is unauthenticated, and torch failures quote absolute build
+    paths, usernames and checkpoint names. The operator needs the detail; the
+    caller needs only something to quote back.
+    """
+    import logging
+
+    import backend.routers.diagnostics as diagnostics
+
+    secret = "cuDNN handle creation failed at " + os.path.join("private", "latest.pt")
+
+    class Exploder:
+        mel_alert_threshold = 0.1
+
+        def predict(self, image):
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(diagnostics, "_predictor", Exploder())
+
+    img = Image.new("RGB", (300, 300), (180, 120, 100))
+    with caplog.at_level(logging.ERROR, logger="dermascan.diagnostics"):
+        response = upload(client, "scan.jpg", jpeg_bytes(img))
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+
+    # Nothing internal reaches the caller.
+    assert secret not in detail
+    assert "cuDNN" not in detail
+    assert "Traceback" not in detail
+    assert "RuntimeError" not in detail
+
+    # A reference does, and it is this request's id - the same one stamped on
+    # every log line the request produced, including the one carrying the cause.
+    import re
+    match = re.search(r"reference ([0-9a-f]{12})", detail)
+    assert match, detail
+    reference = match.group(1)
+
+    assert secret in caplog.text
+    failure_records = [r for r in caplog.records if "analyze failed" in r.getMessage()]
+    assert failure_records, caplog.text
+    assert failure_records[0].request_id == reference
+
+    # And it is handed back on the response, so a caller can correlate without
+    # reading the body.
+    assert response.headers["X-Request-ID"] == reference
+
+
+def test_failed_analysis_does_not_leave_the_upload_behind(client, monkeypatch):
+    """A crash mid-analysis must not orphan the file it just wrote."""
+    import backend.routers.diagnostics as diagnostics
+
+    class Exploder:
+        mel_alert_threshold = 0.1
+
+        def predict(self, image):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(diagnostics, "_predictor", Exploder())
+
+    before = set(os.listdir(diagnostics.UPLOAD_DIR))
+    upload(client, "scan.jpg", jpeg_bytes(Image.new("RGB", (300, 300), (170, 110, 90))))
+    after = set(os.listdir(diagnostics.UPLOAD_DIR))
+
+    assert after == before
+
+
+# ── observability ────────────────────────────────────────────────────────
+
+def test_every_response_carries_a_request_id(client):
+    response = client.get("/api/health")
+    assert re.fullmatch(r"[0-9a-f]{12}", response.headers["X-Request-ID"])
+
+
+def test_a_caller_supplied_request_id_is_echoed(client):
+    """Lets a caller correlate its logs with ours."""
+    response = client.get("/api/health", headers={"X-Request-ID": "caller-abc_123"})
+    assert response.headers["X-Request-ID"] == "caller-abc_123"
+
+
+def test_an_unsafe_request_id_is_replaced_not_echoed(client):
+    """The id lands in every log line, so it is untrusted input."""
+    injected = "abc\nFAKE LOG LINE"
+    response = client.get("/api/health", headers={"X-Request-ID": injected})
+    returned = response.headers["X-Request-ID"]
+    assert returned != injected
+    assert re.fullmatch(r"[0-9a-f]{12}", returned)
+
+
+def test_log_records_carry_the_request_id(client, caplog):
+    """Every record, from any module, must be attributable to a request."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="dermascan"):
+        response = client.get("/api/health")
+
+    request_id = response.headers["X-Request-ID"]
+    access = [r for r in caplog.records if r.name == "dermascan.access"]
+    assert access, caplog.text
+    assert access[0].request_id == request_id
+
+
+@pytest.mark.requires_model
+def test_metrics_report_inference_latency_and_outcomes(client, lesion):
+    from backend import metrics as metrics_module
+
+    metrics_module.reset()
+    client.post("/api/analyze", files={"file": ("lesion.jpg", lesion, "image/jpeg")})
+
+    body = client.get("/api/metrics").json()
+    assert body["counters"]["analyses_completed"] == 1
+    assert body["inference_ms"]["count"] == 1
+    assert body["inference_ms"]["p50"] > 0
+    # The predicted class is counted, so the mix is visible without log scraping.
+    assert any(k.startswith("prediction_") for k in body["counters"])
+
+
+@pytest.mark.requires_model
+def test_metrics_count_ood_rejections_by_reason(client):
+    from backend import metrics as metrics_module
+
+    metrics_module.reset()
+    flat = Image.new("RGB", (300, 300), (128, 128, 128))
+    response = upload(client, "flat.jpg", jpeg_bytes(flat))
+    assert response.status_code == 422
+
+    counters = client.get("/api/metrics").json()["counters"]
+    assert counters["ood_rejections_total"] == 1
+    assert counters["ood_rejection_uniform_field"] == 1
+
+
+# ── hardening ────────────────────────────────────────────────────────────
+
+def test_oversized_upload_is_refused_before_the_body_is_parsed(client):
+    """Content-Length is checked in middleware, before Starlette spools the body.
+
+    The endpoint's own check still exists for chunked uploads that declare no
+    length, but by then the whole body has already been buffered.
+    """
+    from backend.config import MAX_UPLOAD_BYTES
+
+    response = client.post(
+        "/api/analyze",
+        headers={"Content-Length": str(MAX_UPLOAD_BYTES + 1),
+                 "Content-Type": "application/octet-stream"},
+        content=b"x" * 16,
+    )
+    assert response.status_code == 413
+
+
+def test_rate_limit_rejects_a_flood_with_retry_after(client, monkeypatch):
+    from backend import ratelimit
+
+    monkeypatch.setattr(ratelimit, "RATE_LIMIT_PER_MINUTE", 3)
+    ratelimit.reset()
+
+    codes = [client.get("/api/health").status_code for _ in range(5)]
+    assert codes[:3] == [200, 200, 200]
+    assert codes[3:] == [429, 429]
+
+    blocked = client.get("/api/health")
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0
+
+
+def test_inference_has_its_own_tighter_budget(client, monkeypatch):
+    """Polling history freely must not buy the right to queue hundreds of scans."""
+    from backend import ratelimit
+
+    monkeypatch.setattr(ratelimit, "RATE_LIMIT_PER_MINUTE", 100)
+    monkeypatch.setattr(ratelimit, "ANALYZE_RATE_LIMIT_PER_MINUTE", 1)
+    ratelimit.reset()
+
+    assert upload(client, "a.jpg", b"not an image").status_code == 400   # counted
+    assert upload(client, "b.jpg", b"not an image").status_code == 429   # over budget
+    assert client.get("/api/health").status_code == 200                  # other bucket
+
+
+def test_history_read_guard_is_off_by_default(client):
+    """The bundled UI reads history unauthenticated; the guard must be opt-in."""
+    from backend.config import REQUIRE_HISTORY_TOKEN
+
+    assert REQUIRE_HISTORY_TOKEN is False
+    assert client.get("/api/history").status_code == 200
+
+
+def test_history_can_be_put_behind_the_admin_token(client, monkeypatch,
+                                                   admin_headers):
+    import backend.routers.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "REQUIRE_HISTORY_TOKEN", True)
+    assert client.get("/api/history").status_code == 401
+    assert client.get("/api/history", headers=admin_headers).status_code == 200
+
+
+def test_health_reports_which_hardening_is_active(client):
+    hardening = client.get("/api/health").json()["hardening"]
+    assert hardening["max_upload_mb"] >= 1
+    assert hardening["history_requires_token"] is False
+    assert "rate_limit_per_minute" in hardening
+    assert "upload_retention_days" in hardening

@@ -4,6 +4,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
 import json
+import os
 import threading
 from typing import Optional
 
@@ -12,9 +13,55 @@ from io import BytesIO
 
 from .config import (MODEL_PATH, THRESHOLD_PATH, IMG_SIZE, MODEL_ARCH,
                      CALIBRATION_PATH, DEFAULT_TEMPERATURE, DEFAULT_MEL_ALERT_THRESHOLD,
-                     DEFAULT_READOUT)
+                     DEFAULT_READOUT, TORCH_NUM_THREADS, ALLOW_UNCALIBRATED)
+
+# Bound intra-op parallelism before any inference runs. Torch reads this once per
+# process and it is global, so it is set at import rather than per predictor.
+# set_num_interop_threads() can only be called before the inter-op pool is
+# created and raises afterwards, so it is attempted separately and never fatal.
+torch.set_num_threads(TORCH_NUM_THREADS)
+try:
+    torch.set_num_interop_threads(TORCH_NUM_THREADS)
+except RuntimeError:
+    pass
 from .model import build_model, get_conv_head, get_pooled_features
 from .ood import color_gate, load_thresholds, FeatureSpaceOOD
+from .logging_setup import get_logger
+
+log = get_logger("ml_engine")
+
+def read_calibration():
+    """Read models/calibration.json.
+
+    Returns ``(values, loaded, error)``. Shared by the predictor and by
+    /api/health so the health endpoint can report the decision rule actually in
+    force without pulling the checkpoint into memory.
+    """
+    try:
+        with open(CALIBRATION_PATH, "r") as f:
+            return json.load(f), True, None
+    except FileNotFoundError:
+        return {}, False, "file not found"
+    except Exception as e:
+        # The category, not the message: this value is surfaced by /api/health,
+        # which is unauthenticated, and a parse error's text can quote file
+        # contents and paths.
+        return {}, False, "unreadable ({})".format(type(e).__name__)
+
+
+def decision_config():
+    """The decision rule in force, resolved the same way the predictor resolves it."""
+    calib, loaded, error = read_calibration()
+    return {
+        "readout": calib.get("readout", DEFAULT_READOUT),
+        "temperature": float(calib.get("temperature", DEFAULT_TEMPERATURE)),
+        "mel_alert_threshold": calib.get("mel_alert_threshold",
+                                         DEFAULT_MEL_ALERT_THRESHOLD),
+        "calibration_loaded": loaded,
+        "calibration_error": error,
+        "allow_uncalibrated": bool(ALLOW_UNCALIBRATED),
+    }
+
 
 class SkinCancerPredictor:
     def __init__(self, model_path=MODEL_PATH, threshold_path=THRESHOLD_PATH):
@@ -33,23 +80,36 @@ class SkinCancerPredictor:
             ) from e
             
         # Confidence calibration and the melanoma alert channel.
-        self.temperature = DEFAULT_TEMPERATURE
-        self.mel_alert_threshold = DEFAULT_MEL_ALERT_THRESHOLD
-        self.readout = DEFAULT_READOUT
-        try:
-            with open(CALIBRATION_PATH, "r") as f:
-                calib = json.load(f)
-            self.temperature = float(calib.get("temperature", self.temperature))
-            self.mel_alert_threshold = calib.get("mel_alert_threshold",
-                                                 self.mel_alert_threshold)
-            self.readout = calib.get("readout", self.readout)
-            print("Calibration loaded: readout={}, T={:.2f}, melanoma alert at p>={}".format(
-                self.readout, self.temperature, self.mel_alert_threshold))
-        except FileNotFoundError:
-            print("No calibration file; confidences are raw and the melanoma alert "
-                  "is off. Run scripts/fit_calibration.py to enable both.")
-        except Exception as e:
-            print("Warning: could not read {}: {}".format(CALIBRATION_PATH, e))
+        #
+        # A missing or unreadable calibration file used to fall through to the
+        # config defaults with only a print(): sigmoid instead of softmax, no
+        # temperature scaling, and the melanoma alert channel switched off
+        # entirely. That is a materially different decision rule from the one
+        # every published metric describes, and nothing downstream could tell.
+        # It now refuses to construct unless the operator opts in explicitly.
+        calib, self.calibration_loaded, calib_error = read_calibration()
+
+        if not self.calibration_loaded:
+            message = (
+                f"Decision-layer calibration is unavailable ({calib_error}). "
+                f"Without {CALIBRATION_PATH} the server would fall back to "
+                f"readout={DEFAULT_READOUT!r}, temperature={DEFAULT_TEMPERATURE}, "
+                f"melanoma alert disabled — a different decision rule from the one "
+                f"the reported metrics were measured under, with no melanoma alert "
+                f"channel. Restore the file, or set ALLOW_UNCALIBRATED=1 to serve "
+                f"this configuration deliberately."
+            )
+            if not ALLOW_UNCALIBRATED:
+                raise RuntimeError(message)
+            log.warning(message)
+
+        self.temperature = float(calib.get("temperature", DEFAULT_TEMPERATURE))
+        self.mel_alert_threshold = calib.get("mel_alert_threshold",
+                                             DEFAULT_MEL_ALERT_THRESHOLD)
+        self.readout = calib.get("readout", DEFAULT_READOUT)
+        log.info("decision layer: readout=%s T=%.2f melanoma_alert>=%s (calibration %s)",
+                 self.readout, self.temperature, self.mel_alert_threshold,
+                 "loaded" if self.calibration_loaded else "MISSING")
 
         # Architecture must match the training checkpoint exactly. load_state_dict
         # is strict, so a mismatched checkpoint fails loudly instead of serving a
@@ -69,7 +129,8 @@ class SkinCancerPredictor:
             state_dict = ckpt.get('model_state_dict', ckpt)
             cleaned_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
             self.model.load_state_dict(cleaned_dict)
-            print(f"Model successfully loaded on {self.device}")
+            log.info("model loaded on %s from %s", self.device,
+                     os.path.basename(model_path))
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load model weights from {model_path}: {e}. "
@@ -79,10 +140,11 @@ class SkinCancerPredictor:
         self.model.to(self.device).eval()
 
         # OOD gating
-        self.ood_thresholds, ood_calibrated = load_thresholds()
+        self.ood_thresholds, self.ood_calibrated = load_thresholds()
+        ood_calibrated = self.ood_calibrated
         if not ood_calibrated:
-            print("OOD gate: using provisional uncalibrated thresholds. "
-                  "Run scripts/calibrate_ood.py to fit them to your dataset.")
+            log.warning("OOD gate running on provisional uncalibrated thresholds; "
+                        "run scripts/calibrate_ood.py to fit them")
         self.feature_ood = FeatureSpaceOOD()
 
         # Grad-CAM state setup
@@ -114,7 +176,7 @@ class SkinCancerPredictor:
             target_layer.register_forward_hook(forward_hook)
             target_layer.register_full_backward_hook(backward_hook)
         except Exception as e:
-            print(f"Warning: Failed to attach Grad-CAM hooks to conv_head: {e}")
+            log.warning("could not attach Grad-CAM hooks to conv_head: %s", e)
 
     def _apply_jet_colormap(self, cam_np: np.ndarray) -> Image.Image:
         """Converts a normalized 2D numpy array [0, 1] into a Jet RGBA heatmap Image."""
@@ -148,7 +210,7 @@ class SkinCancerPredictor:
                 return self._compute_gradcam(image, target_class_idx)
 
         except Exception as e:
-            print(f"Grad-CAM unavailable for this scan: {e}")
+            log.warning("Grad-CAM unavailable for this scan: %s", e)
             return None
 
     def _compute_gradcam(self, image: Image.Image, target_class_idx: int) -> str:
@@ -197,16 +259,23 @@ class SkinCancerPredictor:
             return get_pooled_features(self.model, tensor).squeeze(0).cpu().numpy()
 
     def _check_ood(self, image: Image.Image, tensor):
-        """Runs both OOD stages. Returns a rejection dict, or None to proceed."""
+        """Runs both OOD stages.
+
+        Returns ``(rejection, metrics)``. ``rejection`` is a rejection dict, or
+        None to proceed; ``metrics`` is the stage-1 image statistics either way.
+        The metrics are reported on the success path too, so the interface can
+        show what the gate actually measured rather than an invented constant.
+        """
         result = color_gate(image, self.ood_thresholds)
+        metrics = result.get("metrics")
         if result["is_ood"]:
-            return result
+            return result, metrics
 
         stage2 = self.feature_ood.check(self._extract_features(tensor))
         if stage2 is not None and stage2["is_ood"]:
-            return stage2
+            return stage2, metrics
 
-        return None
+        return None, metrics
 
     def predict(self, image: Image.Image):
         if image.mode != 'RGB':
@@ -215,7 +284,7 @@ class SkinCancerPredictor:
         tensor = self.transform(image).unsqueeze(0).to(self.device)
 
         # ── OOD gate: image statistics, then feature space ───────
-        ood_check = self._check_ood(image, tensor)
+        ood_check, ood_metrics = self._check_ood(image, tensor)
         if ood_check is not None:
             return ood_check
 
@@ -274,5 +343,12 @@ class SkinCancerPredictor:
             "scores": results,
             "melanoma_alert": melanoma_alert,
             "melanoma_probability": mel_probability,
-            "heatmap_base64": heatmap_base64
+            "heatmap_base64": heatmap_base64,
+            # What the gate measured on this image, plus whether its thresholds
+            # were fitted to real data or are still the provisional defaults.
+            # Reported so the interface can state the gate's actual condition
+            # instead of asserting that every scan passed a calibrated check.
+            "ood_metrics": ood_metrics,
+            "ood_calibrated": bool(self.ood_calibrated),
+            "ood_feature_stage_active": bool(self.feature_ood.available),
         }

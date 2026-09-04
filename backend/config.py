@@ -38,6 +38,13 @@ DEFAULT_MEL_ALERT_THRESHOLD = None
 # "softmax" in its calibration file and this follows it.
 DEFAULT_READOUT = os.getenv("READOUT", "sigmoid")
 
+# The defaults above (sigmoid, T=1.0, no melanoma alert) describe NO validated
+# configuration. Every published figure was measured with the values in
+# models/calibration.json. Serving without that file therefore serves a model
+# the documentation does not describe, with the melanoma alert channel silently
+# off. Refuse by default; set ALLOW_UNCALIBRATED=1 to serve anyway.
+ALLOW_UNCALIBRATED = os.getenv("ALLOW_UNCALIBRATED", "").strip().lower() in {"1", "true", "yes"}
+
 # Inference resolution. Must match configs/default.yaml img_size in the training
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))
@@ -48,6 +55,22 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ── Static asset directories ────────────────────────────────
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 SAMPLES_DIR = os.path.join(BASE_DIR, "samples")
+
+# ── Inference concurrency ───────────────────────────────────
+# How many analyses may run at once. Inference is CPU-bound, so beyond roughly
+# the core count extra concurrency costs latency without adding throughput.
+# Requests past this limit queue rather than competing for the same cores.
+MAX_CONCURRENT_INFERENCE = max(1, int(os.getenv("MAX_CONCURRENT_INFERENCE", 2)))
+
+# Intra-op threads per inference. Torch defaults to roughly the core count, which
+# is right for one inference at a time and wrong for several: with the default,
+# MAX_CONCURRENT_INFERENCE simultaneous scans each spawn a full-width thread pool
+# and oversubscribe the machine several times over, so every scan gets slower.
+# Dividing the cores between the permitted concurrent scans keeps total demand at
+# roughly one thread per core. Set TORCH_NUM_THREADS to override.
+_CPU_COUNT = os.cpu_count() or 2
+TORCH_NUM_THREADS = max(
+    1, int(os.getenv("TORCH_NUM_THREADS", _CPU_COUNT // MAX_CONCURRENT_INFERENCE)))
 
 # ── Upload constraints ──────────────────────────────────────
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
@@ -64,6 +87,22 @@ ANATOMIC_SITES = {
     "Palms & Soles",
 }
 
+# ── Rate limiting ───────────────────────────────────────────
+# Requests per minute per client address. 0 disables a bucket. Generous by
+# default: the aim is to stop one caller monopolising a single-process,
+# CPU-bound service, not to police normal use. Inference gets a tighter budget
+# than the read endpoints because it is what actually costs.
+RATE_LIMIT_PER_MINUTE = max(0, int(os.getenv("RATE_LIMIT_PER_MINUTE", 240)))
+ANALYZE_RATE_LIMIT_PER_MINUTE = max(
+    0, int(os.getenv("ANALYZE_RATE_LIMIT_PER_MINUTE", 60)))
+
+# ── Data retention ──────────────────────────────────────────
+# Delete diagnostic sessions and their images older than this many days, at
+# startup. 0 keeps everything for ever, which is the current documented
+# behaviour and stays the default: silently deleting a clinician's records
+# would be worse than keeping them.
+UPLOAD_RETENTION_DAYS = max(0, int(os.getenv("UPLOAD_RETENTION_DAYS", 0)))
+
 # ── Security ────────────────────────────────────────────────
 # Comma-separated list of allowed browser origins. Defaults to local dev only.
 CORS_ORIGINS = [
@@ -77,3 +116,10 @@ CORS_ORIGINS = [
 
 # Required to call destructive endpoints. When unset, those endpoints are disabled.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or None
+
+# Require ADMIN_TOKEN to *read* history as well as to delete it. Off by default
+# because the bundled UI reads history without credentials and would break; turn
+# it on for any deployment reachable by anyone but the operator. History rows
+# carry predictions and anatomic sites for real uploaded images.
+REQUIRE_HISTORY_TOKEN = os.getenv(
+    "REQUIRE_HISTORY_TOKEN", "").strip().lower() in {"1", "true", "yes"}

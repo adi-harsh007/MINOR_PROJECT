@@ -59,3 +59,7 @@ desktop.ini
 
 # Training checkpoints kept for resume runs (weights live in models/latest.pt)
 models/checkpoints/
+
+# SQLite WAL sidecars (created by journal_mode=WAL)
+data/*.db-wal
+data/*.db-shm

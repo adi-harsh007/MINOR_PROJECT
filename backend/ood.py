@@ -35,6 +35,9 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from .config import BASE_DIR
+from .logging_setup import get_logger
+
+log = get_logger("ood")
 
 OOD_CONFIG_PATH = os.path.join(BASE_DIR, "models", "ood_config.json")
 OOD_STATS_PATH = os.path.join(BASE_DIR, "models", "ood_stats.npz")
@@ -79,7 +82,7 @@ def load_thresholds():
     except FileNotFoundError:
         pass
     except Exception as e:
-        print("Warning: could not read {}: {}".format(OOD_CONFIG_PATH, e))
+        log.warning("could not read %s: %s", OOD_CONFIG_PATH, e)
     return thresholds, calibrated
 
 
@@ -173,13 +176,13 @@ class FeatureSpaceOOD:
             self.inv_cov = data["inv_cov"]
             self.threshold = float(data["threshold"])
             self.available = True
-            print("Feature-space OOD detector loaded (threshold "
-                  "{:.2f})".format(self.threshold))
+            log.info("feature-space OOD detector loaded (threshold %.2f)",
+                     self.threshold)
         except FileNotFoundError:
-            print("Feature-space OOD detector not fitted; colour gate only. "
-                  "Run scripts/calibrate_ood.py to enable it.")
+            log.warning("feature-space OOD detector not fitted; colour gate only. "
+                        "Run scripts/calibrate_ood.py to enable it")
         except Exception as e:
-            print("Warning: could not load OOD stats: {}".format(e))
+            log.warning("could not load OOD stats: %s", e)
 
     def distance(self, features):
         """Squared Mahalanobis distance of a 1-D feature vector."""

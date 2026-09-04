@@ -1,23 +1,39 @@
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 import uvicorn
 
 from .config import (CORS_ORIGINS, FRONTEND_DIR, SAMPLES_DIR, MODEL_PATH,
-                     MODEL_ARCH, IMG_SIZE, THRESHOLD_PATH)
+                     MODEL_ARCH, IMG_SIZE, THRESHOLD_PATH,
+                     MAX_CONCURRENT_INFERENCE, TORCH_NUM_THREADS,
+                     MAX_UPLOAD_BYTES, RATE_LIMIT_PER_MINUTE,
+                     ANALYZE_RATE_LIMIT_PER_MINUTE, REQUIRE_HISTORY_TOKEN,
+                     UPLOAD_RETENTION_DAYS)
 from .database import init_db
 from .routers import diagnostics
+from . import metrics, ratelimit
+from .logging_setup import (get_logger, adopt_request_id, set_request_id,
+                            reset_request_id)
+
+log = get_logger("app")
+access_log = get_logger("access")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    print("Database initialized.")
+    log.info("database ready; serving %s at %dpx, decision layer %s",
+             MODEL_ARCH, IMG_SIZE,
+             "calibrated" if os.path.exists(
+                 os.path.join(os.path.dirname(MODEL_PATH), "calibration.json"))
+             else "UNCALIBRATED")
     yield
+    log.info("shutting down")
 
 
 app = FastAPI(
@@ -34,6 +50,100 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def guard_request(request, call_next):
+    """Reject oversized and over-frequent requests before they cost anything.
+
+    The size check reads Content-Length and answers before the multipart parser
+    runs. The endpoint's own check still exists and still matters - a chunked
+    upload declares no length - but by then Starlette has already spooled the
+    whole body, so a caller could make the server buffer a gigabyte to be told
+    the limit is ten megabytes.
+    """
+    if request.url.path.startswith("/api/"):
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+            metrics.incr("rejected_oversized")
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Image exceeds the {} MB upload limit.".format(
+                    MAX_UPLOAD_BYTES // (1024 * 1024))},
+            )
+
+        client = request.client.host if request.client else "unknown"
+        allowed, retry_after, limit = ratelimit.check(client, request.url.path)
+        if not allowed:
+            metrics.incr("rate_limited")
+            access_log.warning("rate limit hit: client=%s path=%s limit=%d/min",
+                               client, request.url.path, limit)
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+                content={"detail": "Too many requests. Try again in {}s.".format(
+                    retry_after)},
+            )
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def request_context(request, call_next):
+    """Tag every request with an id and record how it went.
+
+    The id is echoed as `X-Request-ID` and stamped on every log line the request
+    produces, so a user-reported failure reference leads straight to its
+    traceback. API requests are logged with their status and duration; static
+    asset fetches are not, since they would drown everything else.
+    """
+    request_id = adopt_request_id(request.headers.get("x-request-id"))
+    token = set_request_id(request_id)
+    is_api = request.url.path.startswith("/api/")
+    started = time.perf_counter()
+    try:
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed = (time.perf_counter() - started) * 1000
+            metrics.incr("requests_unhandled_error")
+            access_log.exception("%s %s -> unhandled exception after %.0fms",
+                                 request.method, request.url.path, elapsed)
+            raise
+
+        elapsed = (time.perf_counter() - started) * 1000
+        response.headers["X-Request-ID"] = request_id
+        if is_api:
+            metrics.incr("requests_total")
+            if response.status_code >= 500:
+                metrics.incr("requests_5xx")
+            elif response.status_code >= 400:
+                metrics.incr("requests_4xx")
+            access_log.info("%s %s -> %d in %.0fms",
+                            request.method, request.url.path,
+                            response.status_code, elapsed)
+        return response
+    finally:
+        # Reset last: the access log above must still carry the id.
+        reset_request_id(token)
+
+
+@app.middleware("http")
+async def no_stale_frontend(request, call_next):
+    """Force revalidation of the SPA's own assets.
+
+    The frontend is served unversioned (`/` and `/js/app.js`), and neither
+    FileResponse nor StaticFiles sets Cache-Control. Browsers then apply
+    heuristic freshness and can keep serving an old app.js for hours after a
+    deploy, silently pairing stale frontend code with a new API. Both already
+    send an ETag, so `no-cache` costs one conditional request and returns 304
+    when nothing changed.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/js/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 
 app.include_router(diagnostics.router)
 
@@ -60,12 +170,37 @@ def health_check():
     Deliberately does not touch the predictor: the model is loaded lazily on the
     first analysis, and a health check should not pull 123 MB into memory. It
     reports whether that load has happened rather than triggering it.
+
+    The decision layer and OOD gate are read from their config files rather than
+    from a live predictor, for the same reason. Reporting them matters: the
+    difference between a calibrated and an uncalibrated deployment is a different
+    decision rule and a disabled melanoma alert channel, and that was previously
+    invisible to anything but stdout.
     """
     from .routers import diagnostics
+    from .ml_engine import decision_config
+    from .ood import OOD_CONFIG_PATH, OOD_STATS_PATH
+
+    decision = decision_config()
+    ood = {
+        "thresholds_fitted": os.path.exists(OOD_CONFIG_PATH),
+        "feature_stage_fitted": os.path.exists(OOD_STATS_PATH),
+    }
+
+    degraded = []
+    if not decision["calibration_loaded"]:
+        degraded.append("decision_layer_uncalibrated")
+    if not ood["thresholds_fitted"]:
+        degraded.append("ood_thresholds_provisional")
+    if not ood["feature_stage_fitted"]:
+        degraded.append("ood_feature_stage_inactive")
+    if not os.path.exists(MODEL_PATH):
+        degraded.append("checkpoint_missing")
 
     return {
         "status": "ok",
         "version": app.version,
+        "degraded": degraded,
         "model": {
             "architecture": MODEL_ARCH,
             "checkpoint": os.path.basename(MODEL_PATH),
@@ -74,7 +209,35 @@ def health_check():
             "input_size": IMG_SIZE,
             "loaded": diagnostics._predictor is not None,
         },
+        "decision_layer": decision,
+        "ood_gate": ood,
+        "concurrency": {
+            "max_concurrent_inference": MAX_CONCURRENT_INFERENCE,
+            "torch_num_threads": TORCH_NUM_THREADS,
+        },
+        # What is actually switched on. Several of these default to off because
+        # enabling them changes behaviour the bundled UI depends on; a public
+        # deployment should be able to see at a glance which are not.
+        "hardening": {
+            "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE,
+            "analyze_rate_limit_per_minute": ANALYZE_RATE_LIMIT_PER_MINUTE,
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "history_requires_token": REQUIRE_HISTORY_TOKEN,
+            "delete_endpoints_enabled": bool(os.getenv("ADMIN_TOKEN")),
+            "upload_retention_days": UPLOAD_RETENTION_DAYS or None,
+        },
     }
+
+
+@app.get("/api/metrics")
+def metrics_endpoint():
+    """Counters and inference latency for this process.
+
+    In-memory and per-process: it resets on restart and does not aggregate
+    across workers. Enough to answer "how slow is inference right now, and what
+    is the gate rejecting?" without standing up a metrics stack.
+    """
+    return metrics.snapshot()
 
 
 if __name__ == "__main__":

@@ -200,7 +200,12 @@
         <main class="relative pt-16 min-h-screen bg-surface">
 
             <!-- ================= VIEW 1: SCAN CONSOLE ================= -->
-            <div id="view-console" class="view-section view-transition">
+            <!-- view-container is the class navigate() hides on every switch; without it
+                 this view stayed on screen behind every other one. It deliberately does
+                 not carry `hidden`: the console is the landing view, so leaving it visible
+                 in the markup avoids a flash on load and keeps something on screen if the
+                 script fails. navigate("view-console") re-shows it on startup regardless. -->
+            <div id="view-console" class="view-container view-section view-transition">
                 <div class="flex flex-col w-full h-[calc(100vh-64px)] relative">
                     <!-- Console Header Bar -->
                     <div class="flex items-center justify-between px-margin-desktop py-stack-gap border-b border-surface-container/50 bg-surface/50 backdrop-blur-md">
@@ -439,25 +444,26 @@
                                     <div class="w-3 h-3 rounded-full bg-secondary shadow-[0_0_10px_rgba(71,255,184,0.8)]"></div>
                                     <h3 class="font-headline-md text-headline-md text-on-surface">Out-of-Domain (OOD) Safety Shield</h3>
                                 </div>
-                                <span id="ood-status-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">QUALIFIED SCAN</span>
+                                <span id="ood-status-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-surface-container text-on-surface-variant border border-outline-variant/40">&mdash;</span>
                             </div>
                             <p class="font-body-md text-body-md text-on-surface-variant" id="ood-status-text">
-                                System passed non-skin image filter gate. Image hue and color profiling match dermoscopic clinical standards.
+                                Awaiting a scan.
                             </p>
                             <div class="grid grid-cols-3 gap-3">
                                 <div class="bg-surface-container p-3 rounded-lg border border-outline-variant/20">
-                                    <span class="text-[10px] text-on-surface-variant font-data-sm">SKIN HUE RATIO</span>
-                                    <p class="font-data-lg text-data-lg text-secondary" id="ood-skin-hue">84.2%</p>
+                                    <span class="text-[10px] text-on-surface-variant font-data-sm">REL. CONTRAST</span>
+                                    <p class="font-data-lg text-data-lg text-secondary" id="ood-rel-contrast">&mdash;</p>
                                 </div>
                                 <div class="bg-surface-container p-3 rounded-lg border border-outline-variant/20">
-                                    <span class="text-[10px] text-on-surface-variant font-data-sm">BLUE-GREEN RATIO</span>
-                                    <p class="font-data-lg text-data-lg text-on-surface" id="ood-bg-ratio">0.92</p>
+                                    <span class="text-[10px] text-on-surface-variant font-data-sm">HIGH-FREQ RATIO</span>
+                                    <p class="font-data-lg text-data-lg text-on-surface" id="ood-hf-ratio">&mdash;</p>
                                 </div>
                                 <div class="bg-surface-container p-3 rounded-lg border border-outline-variant/20">
-                                    <span class="text-[10px] text-on-surface-variant font-data-sm">CONFIDENCE GATE</span>
-                                    <p class="font-data-lg text-data-lg text-secondary" id="ood-gate-val">PASSED</p>
+                                    <span class="text-[10px] text-on-surface-variant font-data-sm">BLUE-GREEN HUE</span>
+                                    <p class="font-data-lg text-data-lg text-secondary" id="ood-blue-green">&mdash;</p>
                                 </div>
                             </div>
+                            <p class="text-[10px] text-on-surface-variant font-data-sm" id="ood-calibration-note"></p>
                         </div>
 
                         <!-- Clinical Recommendation -->
@@ -467,7 +473,7 @@
                                 <h3 class="font-headline-md text-headline-md text-on-surface">Clinical Diagnostic Summary</h3>
                             </div>
                             <p class="font-body-md text-body-md text-on-surface-variant" id="res-clinical-summary">
-                                High probability of malignant lesion detected. Immediate histopathological biopsy and dermatologic evaluation are recommended.
+                                Awaiting a scan.
                             </p>
                             <div class="p-3 bg-error/10 border border-error/20 rounded-xl text-error text-xs font-data-sm flex items-center gap-2">
                                 <span class="material-symbols-outlined text-[18px]">info</span>
@@ -484,12 +490,9 @@
                     <div class="flex items-center justify-between border-b border-surface-container pb-unit px-unit pt-stack-gap">
                         <div class="flex flex-col gap-1">
                             <h1 class="font-headline-lg text-headline-lg text-on-surface">Compare Mode</h1>
-                            <p class="font-data-sm text-data-sm text-on-surface-variant">DUAL VIEWPORT DIFFERENTIAL INSPECTION & AI PROGRESSION ENGINE | v4.0.2</p>
+                            <p class="font-data-sm text-data-sm text-on-surface-variant">SIDE-BY-SIDE VISUAL INSPECTION WITH SYNCHRONISED PAN AND ZOOM</p>
                         </div>
                         <div class="flex items-center gap-gutter">
-                            <button id="btn-run-differential" class="flex items-center gap-2 px-5 py-2 bg-gradient-to-r from-primary to-secondary text-on-primary rounded-lg font-bold shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:brightness-110 transition-all cursor-pointer">
-                                <span class="material-symbols-outlined text-[18px]">analytics</span> RUN DIFFERENTIAL COMPARISON
-                            </button>
                             <div class="flex items-center gap-3 bg-surface-container px-4 py-2 rounded-lg">
                                 <span class="material-symbols-outlined text-secondary text-[20px]">sync</span>
                                 <span class="font-data-sm text-data-sm text-on-surface">SYNC PAN/ZOOM</span>
@@ -497,36 +500,23 @@
                                     <div class="w-4 h-4 bg-primary rounded-full absolute right-0 top-0 shadow-[0_0_8px_rgba(0,212,255,0.5)] transition-transform duration-300" id="syncThumb"></div>
                                 </button>
                             </div>
-                            <button id="btn-toggle-diff" class="flex items-center gap-2 px-6 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 transition-all font-data-sm text-data-sm group cursor-pointer">
-                                <span class="material-symbols-outlined text-[18px]">difference</span> TOGGLE DIFFERENCE OVERLAY
-                            </button>
                         </div>
                     </div>
 
-                    <!-- Assessment Status Banner -->
+                    <!-- Scope notice -->
                     <div class="px-unit pt-unit">
-                        <div id="compare-assessment-banner" class="bg-surface-container border border-outline-variant/30 rounded-xl p-4 flex items-center justify-between shadow-md">
-                            <div class="flex items-center gap-4">
-                                <div class="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-primary">
-                                    <span class="material-symbols-outlined text-[24px]">troubleshoot</span>
-                                </div>
-                                <div>
-                                    <div class="flex items-center gap-2">
-                                        <span class="font-bold text-on-surface text-sm uppercase tracking-wide">Differential Assessment Status:</span>
-                                        <span id="compare-status-badge" class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-error/20 text-error border border-error/40">READY FOR DIFFERENTIAL COMPARISON</span>
-                                    </div>
-                                    <p id="compare-status-desc" class="text-xs text-on-surface-variant mt-0.5">Upload baseline scan A and follow-up scan B, then click Run Differential Comparison to compute pathology deltas.</p>
-                                </div>
+                        <div id="compare-assessment-banner" class="bg-surface-container border border-outline-variant/30 rounded-xl p-4 flex items-center gap-4 shadow-md">
+                            <div class="w-10 h-10 shrink-0 rounded-full bg-tertiary/20 flex items-center justify-center text-tertiary">
+                                <span class="material-symbols-outlined text-[24px]">info</span>
                             </div>
-                            <div class="flex items-center gap-4">
-                                <div class="text-right">
-                                    <span class="text-xs text-on-surface-variant block uppercase">Lesion Area Growth</span>
-                                    <span id="compare-growth-val" class="font-data-lg text-data-lg text-secondary font-bold">-- %</span>
-                                </div>
-                                <div class="text-right border-l border-outline-variant/20 pl-4">
-                                    <span class="text-xs text-on-surface-variant block uppercase">Confidence Index</span>
-                                    <span id="compare-conf-val" class="font-data-lg text-data-lg text-primary font-bold">-- %</span>
-                                </div>
+                            <div>
+                                <span class="font-bold text-on-surface text-sm uppercase tracking-wide">Visual comparison only</span>
+                                <p class="text-xs text-on-surface-variant mt-0.5">
+                                    This view places two scans side by side so they can be inspected together. It does
+                                    <strong>not</strong> measure lesion growth, pigmentation change or border irregularity, and it
+                                    computes no progression assessment &mdash; no such measurement is implemented. To obtain a
+                                    prediction for either image, run it through the Scan Console individually.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -537,8 +527,8 @@
                         <div class="col-span-6 flex flex-col bg-surface rounded-xl overflow-hidden shadow-xl border border-surface-container relative">
                             <div class="p-stack-gap flex items-center justify-between bg-surface-container/50">
                                 <div class="flex items-center gap-2">
-                                    <span class="font-data-sm text-data-sm text-primary uppercase">BASELINE SCAN (SCAN A)</span>
-                                    <span class="font-data-sm text-data-sm text-on-surface-variant" id="compare-a-date">2026-08-15</span>
+                                    <span class="font-data-sm text-data-sm text-primary uppercase">SCAN A</span>
+                                    <span class="font-data-sm text-data-sm text-on-surface-variant" id="compare-a-date">&mdash;</span>
                                 </div>
                                 <div class="flex items-center gap-2">
                                     <input type="file" id="input-compare-a" class="hidden" accept="image/*">
@@ -548,22 +538,16 @@
                                 </div>
                             </div>
                             <div class="flex-1 relative bg-surface-dim overflow-hidden group cursor-crosshair" id="viewportLeft">
-                                <img id="img-compare-left" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDE9_7wqP3hbNNECrW5U9IwccIBhHrBAfbABa1ws_WktWbQ9LQSxvAZD165v9wXyehVP_WQ3nlwQtVx9CA2Qwkx8JZ5iGSlINshbmw32XqI9iCTkJudAU7DwTlesjC1Tu1Zuxz8jpiuINra3Uu0TR1uePqz5eeYGKXidE8NFybvfP-5EDBp2ZEKp0aSauwPUWy6GyDPRGmQHHsnMcJvhDvs34O1Zii-zjAA29YDwvL1xa-hXXJFnaQ" class="w-full h-full object-contain" alt="Baseline Lesion" />
-                                <div id="drop-overlay-a" class="absolute inset-0 bg-primary/20 border-2 border-dashed border-primary hidden flex items-center justify-center pointer-events-none backdrop-blur-xs">
-                                    <span class="font-data-sm text-data-sm text-primary font-bold bg-surface/90 px-3 py-1.5 rounded shadow">DROP IMAGE FOR SCAN A</span>
+                                <img id="img-compare-left" class="w-full h-full object-contain hidden" alt="Scan A" />
+                                <div id="compare-a-placeholder" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-on-surface-variant pointer-events-none">
+                                    <span class="material-symbols-outlined text-[40px] opacity-40">add_photo_alternate</span>
+                                    <span class="font-data-sm text-data-sm">No image loaded &mdash; upload or drop a scan</span>
                                 </div>
-                            </div>
-                            <div class="h-36 bg-surface-container border-t border-outline-variant/20 p-4 flex flex-col gap-2">
-                                <span class="font-data-sm text-data-sm text-on-surface-variant uppercase">BASELINE METRICS</span>
-                                <div class="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <span class="text-xs text-on-surface-variant">Pigmentation Density</span>
-                                        <p class="font-data-lg text-data-lg text-secondary" id="compare-a-pigm">42%</p>
-                                    </div>
-                                    <div>
-                                        <span class="text-xs text-on-surface-variant">Border Irregularity</span>
-                                        <p class="font-data-lg text-data-lg text-tertiary" id="compare-a-border">2.1 Index</p>
-                                    </div>
+                                <div class="absolute bottom-4 left-4 flex gap-2 z-20">
+                                    <span id="tag-compare-a" class="px-2 py-1 bg-surface-container-high/80 backdrop-blur font-data-sm text-data-sm text-primary rounded border border-primary/30 hidden"></span>
+                                </div>
+                                <div id="drop-overlay-a" class="absolute inset-0 bg-primary/20 border-2 border-dashed border-primary hidden flex items-center justify-center pointer-events-none backdrop-blur-xs z-30">
+                                    <span class="font-data-sm text-data-sm text-primary font-bold bg-surface/90 px-3 py-1.5 rounded shadow">DROP IMAGE FOR SCAN A</span>
                                 </div>
                             </div>
                         </div>
@@ -572,43 +556,30 @@
                         <div class="col-span-6 flex flex-col bg-surface rounded-xl overflow-hidden shadow-xl border border-surface-container relative">
                             <div class="p-stack-gap flex items-center justify-between bg-surface-container/50">
                                 <div class="flex items-center gap-2">
-                                    <span class="font-data-sm text-data-sm text-error uppercase">FOLLOW-UP SCAN (SCAN B)</span>
-                                    <span class="font-data-sm text-data-sm text-on-surface-variant" id="compare-b-date">2026-09-02</span>
+                                    <span class="font-data-sm text-data-sm text-secondary uppercase">SCAN B</span>
+                                    <span class="font-data-sm text-data-sm text-on-surface-variant" id="compare-b-date">&mdash;</span>
                                 </div>
                                 <div class="flex items-center gap-2">
                                     <input type="file" id="input-compare-b" class="hidden" accept="image/*">
-                                    <button id="btn-load-current-to-b" class="px-2.5 py-1 bg-surface-container-high hover:bg-error/20 text-error border border-error/30 rounded text-xs flex items-center gap-1 transition-all cursor-pointer" title="Load image from active Diagnostic Console">
+                                    <button id="btn-load-current-to-b" class="px-2.5 py-1 bg-surface-container-high hover:bg-secondary/20 text-secondary border border-secondary/30 rounded text-xs flex items-center gap-1 transition-all cursor-pointer" title="Load image from active Diagnostic Console">
                                         <span class="material-symbols-outlined text-[14px]">sync</span> Active Scan
                                     </button>
-                                    <button id="btn-upload-compare-b" class="px-2.5 py-1 bg-surface-container-high hover:bg-error/20 text-error border border-error/30 rounded text-xs flex items-center gap-1 transition-all cursor-pointer">
+                                    <button id="btn-upload-compare-b" class="px-2.5 py-1 bg-surface-container-high hover:bg-secondary/20 text-secondary border border-secondary/30 rounded text-xs flex items-center gap-1 transition-all cursor-pointer">
                                         <span class="material-symbols-outlined text-[14px]">upload</span> Upload Scan B
                                     </button>
                                 </div>
                             </div>
                             <div class="flex-1 relative bg-surface-dim overflow-hidden group cursor-crosshair" id="viewportRight">
-                                <img id="img-compare-right" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAEFf8NC_djo8Qnb6jnq6XiaA0xcO-IhUieulDwQfCrRypIPMCZuC-eYHuM_8mi9I7tLeLiZhdBLUHyGeWZKRqA8SM6uocAMSEmCtRsIbwlPgTdjT7PEega01lE_gTUCzBbhGjdzYCsRYZRo6ZyDG0ncA2cyt9B0bJ0aGEe7zUEdVEIz6SBit3NWkEvlqoa2A7H43uqwl2rSXVxNii9StvN7UqB-b1FBW47zkUcVHVY1sAam6fa858" class="w-full h-full object-contain" alt="Follow up Lesion" />
-                                <canvas id="canvas-diff-overlay" class="absolute inset-0 w-full h-full object-contain pointer-events-none hidden z-10 opacity-80"></canvas>
-                                <div id="diffOverlay" class="absolute inset-0 border-2 border-error/50 bg-error/10 pointer-events-none hidden flex items-center justify-center z-20">
-                                    <span class="bg-error text-on-error font-data-sm text-data-sm px-3 py-1 rounded shadow-lg">DELTA HEATMAP ACTIVE</span>
+                                <img id="img-compare-right" class="w-full h-full object-contain hidden" alt="Scan B" />
+                                <div id="compare-b-placeholder" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-on-surface-variant pointer-events-none">
+                                    <span class="material-symbols-outlined text-[40px] opacity-40">add_photo_alternate</span>
+                                    <span class="font-data-sm text-data-sm">No image loaded &mdash; upload, drop, or pull the active scan</span>
                                 </div>
                                 <div class="absolute bottom-4 right-4 flex gap-2 z-20">
-                                    <span id="tag-compare-b" class="px-2 py-1 bg-surface-container-high/80 backdrop-blur font-data-sm text-data-sm text-error rounded border border-error/30">MEL (Melanoma)</span>
+                                    <span id="tag-compare-b" class="px-2 py-1 bg-surface-container-high/80 backdrop-blur font-data-sm text-data-sm text-secondary rounded border border-secondary/30 hidden"></span>
                                 </div>
-                                <div id="drop-overlay-b" class="absolute inset-0 bg-error/20 border-2 border-dashed border-error hidden flex items-center justify-center pointer-events-none backdrop-blur-xs z-30">
-                                    <span class="font-data-sm text-data-sm text-error font-bold bg-surface/90 px-3 py-1.5 rounded shadow">DROP IMAGE FOR SCAN B</span>
-                                </div>
-                            </div>
-                            <div class="h-36 bg-surface-container border-t border-outline-variant/20 p-4 flex flex-col gap-2">
-                                <span class="font-data-sm text-data-sm text-error uppercase">DELTA METRICS (PROGRESSION)</span>
-                                <div class="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <span class="text-xs text-on-surface-variant">Pigmentation Density</span>
-                                        <p class="font-data-lg text-data-lg text-error" id="compare-b-pigm">+16% Increase</p>
-                                    </div>
-                                    <div>
-                                        <span class="text-xs text-on-surface-variant">Border Irregularity</span>
-                                        <p class="font-data-lg text-data-lg text-error" id="compare-b-border">+1.3 Delta</p>
-                                    </div>
+                                <div id="drop-overlay-b" class="absolute inset-0 bg-secondary/20 border-2 border-dashed border-secondary hidden flex items-center justify-center pointer-events-none backdrop-blur-xs z-30">
+                                    <span class="font-data-sm text-data-sm text-secondary font-bold bg-surface/90 px-3 py-1.5 rounded shadow">DROP IMAGE FOR SCAN B</span>
                                 </div>
                             </div>
                         </div>
