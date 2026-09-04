@@ -388,6 +388,157 @@ def test_history_list_and_detail_agree(client, lesion):
     assert client.get(f"/api/history/{created['session_id']}").json() == row
 
 
+# ── case labels ──────────────────────────────────────────────────────────
+# A case is the set of scans sharing a label. It is the only thing linking two
+# scans, it is asserted by a person rather than inferred, and it is the one piece
+# of free text this application stores.
+
+def test_case_label_is_normalised_not_validated():
+    """No vocabulary to check against - only whitespace and a length."""
+    from backend.routers.diagnostics import normalise_case_label
+    from backend.config import CASE_LABEL_MAX_LENGTH
+
+    assert normalise_case_label("  Left  shoulder   mole  ") == "Left shoulder mole"
+    assert normalise_case_label("") is None
+    assert normalise_case_label("   ") is None
+    assert normalise_case_label(None) is None
+    # Two labels differing only by spacing would split one lesion's history into
+    # two cases that look identical on screen.
+    assert normalise_case_label("A  B") == normalise_case_label("A B")
+    assert len(normalise_case_label("x" * 500)) == CASE_LABEL_MAX_LENGTH
+
+
+@pytest.mark.slow
+def test_case_label_is_recorded_with_the_scan(client, lesion):
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                       data={"site": "Anterior Torso",
+                             "case": "  Left  shoulder mole "}).json()
+
+    assert body["case_label"] == "Left shoulder mole"
+    assert client.get(f"/api/history/{body['session_id']}").json()["case_label"] \
+        == "Left shoulder mole"
+
+
+@pytest.mark.slow
+def test_case_label_can_be_set_changed_and_cleared_afterwards(client, lesion):
+    """Whether two scans are one lesion is usually only clear once both exist."""
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    sid = created["session_id"]
+    assert created["case_label"] is None
+
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": "Right calf"}).json()["case_label"] == "Right calf"
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": None}).json()["case_label"] is None
+    assert client.patch(f"/api/history/{sid}",
+                        json={"case_label": "  spaced   out "}).json()["case_label"] == "spaced out"
+
+
+def test_case_label_patch_404s_for_an_unknown_id(client):
+    assert client.patch("/api/history/99999999",
+                        json={"case_label": "x"}).status_code == 404
+
+
+@pytest.mark.slow
+def test_cases_aggregate_the_scans_filed_under_each_label(client, lesion):
+    """Cases are derived, not stored: nothing to orphan, no second source of truth."""
+    ids = []
+    for _ in range(2):
+        ids.append(client.post(
+            "/api/analyze", files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+            data={"case": "Shoulder A"}).json()["session_id"])
+    client.post("/api/analyze", files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                data={"case": "Shoulder B"})
+
+    cases = {c["case_label"]: c for c in client.get("/api/cases").json()}
+    assert cases["Shoulder A"]["scan_count"] == 2
+    assert cases["Shoulder B"]["scan_count"] == 1
+    assert cases["Shoulder A"]["first_scan"] <= cases["Shoulder A"]["latest_scan"]
+
+    # Clearing the last label removes the case, because there is no row to leave
+    # behind pointing at nothing.
+    client.patch(f"/api/history/{ids[0]}", json={"case_label": None})
+    client.patch(f"/api/history/{ids[1]}", json={"case_label": None})
+    assert "Shoulder A" not in {c["case_label"] for c in client.get("/api/cases").json()}
+
+
+@pytest.mark.slow
+def test_case_label_is_stored_verbatim_and_never_interpreted(client, lesion):
+    """The label is free text, so the API must not sanitise it into something else.
+
+    Escaping is the renderer's job and is done at every insertion point in
+    app.js. Stripping or rewriting markup here instead would corrupt legitimate
+    labels while still leaving the client responsible - so this pins the API to
+    storing exactly what it was given, and the client to escaping it.
+    """
+    hostile = "<img src=x onerror=alert(1)>"
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                          data={"case": hostile}).json()
+
+    assert created["case_label"] == hostile
+    assert client.get(f"/api/history/{created['session_id']}").json()["case_label"] == hostile
+    client.patch(f"/api/history/{created['session_id']}", json={"case_label": None})
+
+
+@pytest.mark.slow
+def test_case_writes_follow_the_history_read_guard(client, lesion, monkeypatch,
+                                                   admin_headers):
+    """Labels are not destructive, so they are gated like reads, not like deletes.
+
+    Gating them behind ADMIN_TOKEN - unset by default - would make the feature
+    unusable in the deployment the bundled UI is built for. Turning on
+    REQUIRE_HISTORY_TOKEN has to close writes here as well as reads.
+    """
+    import backend.routers.diagnostics as diagnostics
+
+    sid = client.post("/api/analyze",
+                      files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()["session_id"]
+
+    monkeypatch.setattr(diagnostics, "REQUIRE_HISTORY_TOKEN", True)
+    assert client.patch(f"/api/history/{sid}", json={"case_label": "x"}).status_code == 401
+    assert client.get("/api/cases").status_code == 401
+    assert client.patch(f"/api/history/{sid}", json={"case_label": "x"},
+                        headers=admin_headers).status_code == 200
+    assert client.get("/api/cases", headers=admin_headers).status_code == 200
+
+
+@pytest.mark.slow
+def test_has_image_agrees_with_the_image_endpoint(client, lesion):
+    """A record cannot claim to have an image the image route will not serve.
+
+    `has_image` was derived from resolve_stored_path() alone, which answers
+    whether the stored value points inside the upload directory - not whether
+    anything is there. Retention, the orphan sweep and manual deletion all leave
+    rows whose files are gone, and the client was told the image was retained and
+    then handed a 404 for it. Found for real when a sweep removed 154 uploads
+    that their records still referenced.
+    """
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    sid = created["session_id"]
+
+    assert client.get(f"/api/history/{sid}").json()["has_image"] is True
+    assert client.get(f"/api/history/{sid}/image").status_code == 200
+
+    # Remove the file the way retention and the sweep do, leaving the row.
+    from backend.models import DiagnosticSession
+    from backend.database import SessionLocal
+    from backend.storage import resolve_stored_path
+
+    db = SessionLocal()
+    try:
+        stored = db.query(DiagnosticSession).filter_by(id=sid).first().image_path
+    finally:
+        db.close()
+    os.remove(resolve_stored_path(stored))
+
+    assert client.get(f"/api/history/{sid}").json()["has_image"] is False
+    assert client.get(f"/api/history/{sid}/image").status_code == 404
+
+
 def test_history_detail_404s_for_an_unknown_id(client):
     assert client.get("/api/history/99999999").status_code == 404
 

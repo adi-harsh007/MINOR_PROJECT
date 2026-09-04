@@ -89,6 +89,8 @@ Rejected scans are not persisted, and their uploaded file is deleted.
 | `GET` | `/api/history` | Completed sessions, newest first. `limit` is bounded to 1–200. |
 | `GET` | `/api/history/{id}` | One session. Adds `threshold_used`, `melanoma_probability` and `has_image` to what the list carries. Read by the comparison view. |
 | `GET` | `/api/history/{id}/image` | The stored upload for a session. Path comes from the database and is resolved through `resolve_stored_path()`; 404 when retention or the orphan sweep has removed the file. |
+| `PATCH` | `/api/history/{id}` | Sets, changes or clears `case_label`. Guarded by the history *read* guard, not the admin token: the change is non-destructive and reversible, and gating it behind `ADMIN_TOKEN` (unset by default) would make case grouping unusable. `REQUIRE_HISTORY_TOKEN` closes it along with reads. |
+| `GET` | `/api/cases` | Every case label in use, with scan count, first and latest scan, and how many are high risk. Derived by grouping the scans — there is no cases table. |
 | `DELETE` | `/api/history/all` | Deletes every session and its image. **Requires `X-Admin-Token`.** |
 | `DELETE` | `/api/history/{id}` | Deletes one session. **Requires `X-Admin-Token`.** |
 | `GET` | `/api/health` | Serving configuration: architecture, checkpoint name and presence, input size, and whether the model has been loaded yet. Does not trigger a load. |

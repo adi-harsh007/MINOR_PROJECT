@@ -30,7 +30,9 @@ const state = {
     // The two records the comparison view is showing, plus a slot id parked by
     // the results view on its way here.
     compare: { a: null, b: null, pendingA: null },
-    modelCard: null
+    modelCard: null,
+    cases: null,
+    compareCase: null
 };
 
 // ─── Pathology Class Descriptions & Codes ───────────────────────────────────
@@ -728,6 +730,13 @@ async function runAnalysis() {
         
         formData.append("site", state.selectedAnatomicSite);
 
+        // Free text, so it is normalised server-side; sending it raw keeps one
+        // definition of what a label may be.
+        const caseInput = document.getElementById("input-case-label");
+        if (caseInput && caseInput.value.trim()) {
+            formData.append("case", caseInput.value.trim());
+        }
+
         const result = await apiCall("/analyze", {
             method: "POST",
             body: formData
@@ -746,6 +755,7 @@ async function runAnalysis() {
         }
 
         state.latestResult = result;
+        if (result.case_label) loadCases(true);
 
         // Transition to Diagnostic Results view
         navigate("view-results", result);
@@ -1296,7 +1306,7 @@ async function loadAnalyticsData() {
 
     historyTableBody.innerHTML = `
         <tr>
-            <td colspan="6" class="py-14 text-center text-on-surface-muted text-[13px]">
+            <td colspan="7" class="py-14 text-center text-on-surface-muted text-[13px]">
                 <span class="material-symbols-outlined animate-spin text-[22px] block mb-2">progress_activity</span>
                 Loading records&hellip;
             </td>
@@ -1337,7 +1347,7 @@ function renderHistoryTable(records) {
     if (!records.length) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="py-14 text-center text-on-surface-muted">
+                <td colspan="7" class="py-14 text-center text-on-surface-muted">
                     <span class="material-symbols-outlined text-[28px] block mb-2">inbox</span>
                     <p class="text-[14px] text-on-surface-variant">No scans recorded yet</p>
                     <p class="text-[13px] mt-1">Run one from the scan console and it will appear here.</p>
@@ -1364,6 +1374,7 @@ function renderHistoryTable(records) {
             <tr class="border-b border-outline-variant hover:bg-surface-container transition-colors">
                 <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-muted">#${log.id}</td>
                 <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-variant tabular">${dateStr} <span class="text-on-surface-muted">${timeStr}</span></td>
+                ${caseCellMarkup(log)}
                 <td class="py-3 px-5 text-[13px] text-on-surface">${meta.name} <span class="font-data-sm text-[12px] text-on-surface-muted">${log.prediction.toUpperCase()}</span></td>
                 <td class="py-3 px-5 font-data-sm text-[13px] tabular text-right ${isHigh ? 'text-risk-high' : 'text-on-surface'}">${confPct}%</td>
                 <td class="py-3 px-5">
@@ -1476,6 +1487,177 @@ function exportHistoryCSV() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Cases
+
+   A case is a lesion the operator is tracking: scans sharing a label. There is
+   no cases table — the label lives on the scan, so nothing can be orphaned and
+   there is no second source of truth.
+
+   The label is the only thing in this application that connects two scans, and
+   it connects them *because someone said so*. Everything built on it attributes
+   it accordingly: the comparison view says you filed these together, never that
+   the system determined they match, and grouping still licenses no claim about
+   change in the lesion.
+
+   Note on escaping: case labels are the one piece of free text this UI renders.
+   Everything else interpolated into innerHTML is a server-constrained enum or a
+   number. Every insertion point below goes through escapeHtml().
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+async function loadCases(force = false) {
+    if (!force && state.cases) return state.cases;
+    try {
+        state.cases = await apiCall("/cases");
+    } catch (err) {
+        state.cases = [];
+        toast("Could not load cases: " + err.message, "error");
+    }
+    renderCaseSuggestions();
+    return state.cases;
+}
+
+// Feeds the console's datalist, so an existing lesion is picked rather than
+// retyped into a near-miss that silently splits its history in two.
+function renderCaseSuggestions() {
+    const list = document.getElementById("case-label-suggestions");
+    if (!list) return;
+    list.innerHTML = (state.cases || [])
+        .map(c => `<option value="${escapeHtml(c.case_label)}"></option>`).join("");
+}
+
+async function setCaseLabel(sessionId, label) {
+    const body = await apiCall(`/history/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_label: label }),
+    });
+
+    // Keep the cached row in step so the table does not have to be refetched.
+    const row = (state.history || []).find(r => r.id === body.id);
+    if (row) row.case_label = body.case_label;
+
+    // The set of cases may have gained or lost one.
+    await loadCases(true);
+    return body;
+}
+
+// Swap the cell for an input. Deliberately inline rather than a modal: labelling
+// is done in bulk while reading down the table, and a dialog per row makes that
+// a chore nobody completes.
+function beginCaseEdit(cell, sessionId, current) {
+    if (cell.dataset.editing === "true") return;
+    cell.dataset.editing = "true";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "input w-full";
+    input.maxLength = 64;
+    input.value = current || "";
+    input.setAttribute("aria-label", `Case label for scan ${sessionId}`);
+    input.setAttribute("list", "case-label-suggestions");
+
+    cell.innerHTML = "";
+    cell.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+        if (settled) return;
+        settled = true;
+        cell.dataset.editing = "false";
+
+        if (!commit) {
+            renderHistoryTable(state.history);
+            return;
+        }
+        const next = input.value.trim();
+        if (next === (current || "")) {
+            renderHistoryTable(state.history);
+            return;
+        }
+        try {
+            await setCaseLabel(sessionId, next || null);
+            toast(next ? `Filed under “${next}”` : "Case label cleared", "success");
+        } catch (err) {
+            toast("Could not save the case label: " + err.message, "error");
+        }
+        renderHistoryTable(state.history);
+    };
+
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); finish(true); }
+        if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+}
+
+function caseCellMarkup(record) {
+    const label = record.case_label;
+    return `
+        <td class="py-3 px-5 case-cell" data-session-id="${record.id}">
+            <button type="button" class="case-edit-btn text-left text-[13px] rounded px-1.5 -mx-1.5 py-0.5 transition-colors ${
+                label ? "text-on-surface hover:bg-surface-container-high"
+                      : "text-on-surface-muted hover:text-on-surface hover:bg-surface-container-high"
+            }" title="${label ? "Change the case label" : "Assign a case label"}">${
+                label ? escapeHtml(label) : "+ Add"
+            }</button>
+        </td>`;
+}
+
+// ── Compare: choosing scans within one case ─────────────────────────────────
+
+function renderCompareCaseFilter() {
+    const select = document.getElementById("compare-case-filter");
+    if (!select) return;
+    const chosen = select.value;
+    select.innerHTML = `<option value="">All scans</option>` +
+        (state.cases || []).map(c =>
+            `<option value="${escapeHtml(c.case_label)}">${escapeHtml(c.case_label)} · ${
+                c.scan_count} scan${c.scan_count === 1 ? "" : "s"}</option>`).join("");
+    if (chosen && (state.cases || []).some(c => c.case_label === chosen)) {
+        select.value = chosen;
+    }
+}
+
+// Picking a case answers the question the pickers otherwise leave open: which
+// two of its scans? Oldest and newest is the pair anyone comparing a tracked
+// lesion wants, so it is chosen for them and remains changeable.
+async function applyCompareCaseFilter(label) {
+    state.compareCase = label || null;
+    populateCompareSelectors();
+
+    const hint = document.getElementById("compare-case-hint");
+    if (!label) {
+        if (hint) hint.textContent =
+            "Pick a case to narrow both lists to its scans, oldest and newest preselected.";
+        return;
+    }
+
+    const scans = (state.history || [])
+        .filter(r => r.case_label === label)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    if (hint) {
+        hint.textContent = scans.length < 2
+            ? `“${label}” has ${scans.length} scan. Two are needed to compare.`
+            : `“${label}”: ${scans.length} scans. Showing the oldest and the newest.`;
+    }
+
+    if (scans.length >= 2) {
+        const a = String(scans[0].id);
+        const b = String(scans[scans.length - 1].id);
+        const selectA = document.getElementById("compare-select-a");
+        const selectB = document.getElementById("compare-select-b");
+        if (selectA) selectA.value = a;
+        if (selectB) selectB.value = b;
+        await setCompareSlot("A", a);
+        await setCompareSlot("B", b);
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Compare view
 
    Two recorded scans, chosen from history. The previous version accepted loose
@@ -1542,19 +1724,27 @@ function formatRecordedAt(iso) {
 
 function compareOptionLabel(rec) {
     const meta = PATHOLOGY_META[rec.prediction] || { name: rec.prediction };
-    return `#${rec.id} · ${meta.name} · ${formatPct(rec.confidence)} · ${formatRecordedAt(rec.created_at)}`;
+    // The case is redundant once the list is filtered to one.
+    const caseBit = (!state.compareCase && rec.case_label) ? ` · ${rec.case_label}` : "";
+    return `#${rec.id} · ${meta.name} · ${formatPct(rec.confidence)} · ` +
+           `${formatRecordedAt(rec.created_at)}${caseBit}`;
 }
 
 // Populate both pickers from whatever history is loaded, keeping any selection
 // the user has already made.
 function populateCompareSelectors() {
-    const records = state.history || [];
+    let records = state.history || [];
+    if (state.compareCase) {
+        records = records
+            .filter(r => r.case_label === state.compareCase)
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
     ["A", "B"].forEach(slot => {
         const select = document.getElementById(`compare-select-${slot.toLowerCase()}`);
         if (!select) return;
         const chosen = select.value;
         select.innerHTML = `<option value="">Select a recorded scan…</option>` +
-            records.map(r => `<option value="${r.id}">${compareOptionLabel(r)}</option>`).join("");
+            records.map(r => `<option value="${r.id}">${escapeHtml(compareOptionLabel(r))}</option>`).join("");
         if (chosen && records.some(r => String(r.id) === String(chosen))) {
             select.value = chosen;
         }
@@ -1570,6 +1760,12 @@ async function loadCompareRecords(force = false) {
             return;
         }
     }
+    // Always refetched, never reused from the page load: scan counts move with
+    // every analysis, and a filter reading "1 scan" beside a hint reading "3"
+    // is worse than one extra query. It also aggregates over every record,
+    // where state.history stops at the list limit.
+    await loadCases(true);
+    renderCompareCaseFilter();
     populateCompareSelectors();
 
     // A scan that has just finished is the one you want in slot A.
@@ -1699,6 +1895,34 @@ function renderCompareSummary(a, b) {
     const siteA = a.anatomic_site || "Not recorded";
     const siteB = b.anatomic_site || "Not recorded";
     set("compare-site", siteA === siteB ? siteA : `A: ${siteA} · B: ${siteB}`);
+
+    const sameCase = Boolean(a.case_label) && a.case_label === b.case_label;
+    if (sameCase) {
+        set("compare-case", a.case_label);
+        set("compare-case-detail", "Both scans filed here");
+    } else if (a.case_label || b.case_label) {
+        set("compare-case", "Different");
+        set("compare-case-detail",
+            `A: ${a.case_label || "unfiled"} · B: ${b.case_label || "unfiled"}`);
+    } else {
+        set("compare-case", "Unfiled");
+        set("compare-case-detail", "Neither scan has a case label");
+    }
+
+    // Grouping changes who is making the claim, and nothing else. It never
+    // licenses a statement about the lesion changing: the application still
+    // measures nothing, and that half of the notice is identical either way.
+    const note = document.getElementById("compare-identity-note");
+    if (note) {
+        note.innerHTML = sameCase
+            ? `<span class="font-semibold text-on-surface">You have filed both scans under ` +
+              `“${escapeHtml(a.case_label)}”.</span> That is your assertion that they show the same ` +
+              `lesion — the application did not determine it and cannot check it. Read in that order, ` +
+              `A is the earlier record and B the later one.`
+            : `<span class="font-semibold text-on-surface">These are two independent inferences.</span> ` +
+              `Neither scan is filed with the other under a case label, so nothing here indicates they ` +
+              `show the same lesion. Assign a case in History if they do.`;
+    }
 }
 
 function renderCompareClassTable(a, b) {
@@ -1762,15 +1986,16 @@ function renderCompareDetailTable(a, b) {
         ["Melanoma alert", yesNo(a.melanoma_alert), yesNo(b.melanoma_alert)],
         ["p(melanoma)", formatPct(a.melanoma_probability), formatPct(b.melanoma_probability)],
         ["Decision threshold", num(a.threshold_used, 3), num(b.threshold_used, 3)],
+        ["Case", a.case_label || "Unfiled", b.case_label || "Unfiled"],
         ["Anatomic site", a.anatomic_site || "Not recorded", b.anatomic_site || "Not recorded"],
         ["Image retained", yesNo(a.has_image), yesNo(b.has_image)],
     ];
 
     tbody.innerHTML = rows.map(([field, va, vb]) => `
         <tr class="border-b border-outline-variant/60">
-            <td class="py-2.5 pr-4 text-[13px] text-on-surface-variant">${field}</td>
-            <td class="py-2.5 px-3 text-[13px] text-on-surface">${va}</td>
-            <td class="py-2.5 px-3 text-[13px] text-on-surface">${vb}</td>
+            <td class="py-2.5 pr-4 text-[13px] text-on-surface-variant">${escapeHtml(field)}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${escapeHtml(va)}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${escapeHtml(vb)}</td>
         </tr>
     `).join("");
 }
@@ -1793,6 +2018,14 @@ function renderCompare() {
     if (content) {
         content.classList.remove("hidden");
         content.classList.add("flex");
+    }
+
+    // Only reorder within a case, where chronology is meaningful; two unrelated
+    // scans have no natural order and swapping them would fight the user.
+    if (a.case_label && a.case_label === b.case_label
+            && new Date(a.created_at) > new Date(b.created_at)) {
+        [state.compare.a, state.compare.b] = [b, a];
+        return renderCompare();
     }
 
     renderCompareHeader("A", a);
@@ -2143,6 +2376,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // 3. Populate Clinical Sample Gallery
     renderSampleGallery();
 
+    // Case labels already in use, for the console's suggestion list.
+    loadCases();
+
     // 4. Anatomic Site Tagger Buttons
     document.querySelectorAll(".anatomic-tag").forEach(tagBtn => {
         tagBtn.addEventListener("click", () => {
@@ -2249,7 +2485,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const meta = PATHOLOGY_META[item.prediction] || { name: item.prediction };
                 return item.id.toString().includes(q) ||
                        item.prediction.toLowerCase().includes(q) ||
-                       meta.name.toLowerCase().includes(q);
+                       meta.name.toLowerCase().includes(q) ||
+                       (item.case_label || "").toLowerCase().includes(q);
             });
             renderHistoryTable(filtered);
         });
@@ -2262,6 +2499,27 @@ document.addEventListener("DOMContentLoaded", () => {
     // 11b. Model card
     const btnModelRefresh = document.getElementById("btn-model-refresh");
     if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelCard);
+
+    // 11c. Case filter on the comparison view.
+    const caseFilter = document.getElementById("compare-case-filter");
+    if (caseFilter) {
+        caseFilter.addEventListener("change", (e) => applyCompareCaseFilter(e.target.value));
+    }
+
+    // 11d. Inline case editing in the history table. Delegated, because the rows
+    //      are re-rendered on every search keystroke and every saved label.
+    const historyBody = document.getElementById("analytics-history-tbody");
+    if (historyBody) {
+        historyBody.addEventListener("click", (e) => {
+            const btn = e.target.closest(".case-edit-btn");
+            if (!btn) return;
+            const cell = btn.closest(".case-cell");
+            if (!cell) return;
+            const id = cell.getAttribute("data-session-id");
+            const record = (state.history || []).find(r => String(r.id) === String(id));
+            beginCaseEdit(cell, id, record ? record.case_label : "");
+        });
+    }
 
     // 12. Compare view
     const btnCompareRefresh = document.getElementById("btn-compare-refresh");

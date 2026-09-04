@@ -22,6 +22,7 @@ planned work in the present tense and listed capabilities that were never built.
 | Analytics view | `view-analytics` | Scan counts and class distribution computed client-side from history. |
 | Side-by-side comparison | `renderCompare()` | Two **recorded** scans chosen from history. Shows both stored images, per-class softmax for each with the arithmetic difference B − A, and every persisted field (prediction, confidence, high-risk flag, melanoma alert, p(mel), decision threshold, site, timestamps). Reads `GET /api/history/{id}` and `GET /api/history/{id}/image`. Differences are between two model outputs; nothing about the skin is measured, and the view says so. |
 | Knowledge reference | `view-knowledge` | Static reference cards for the 7 classes. |
+| Case grouping | `case_label` on the record | Scans sharing an operator-typed label are one lesion. Set on the console at scan time (with suggestions from labels already in use) or edited inline in History. The comparison view filters by case, preselects that case's oldest and newest scan, orders A before B chronologically, and attributes the grouping to the operator rather than presenting it as a finding. Cases are derived by grouping, not stored in a table. |
 | Model card | `loadModelCard()` | Publishes the recorded evaluation from `GET /api/model`: accuracy, macro F1, ECE, the melanoma operating point (recall, surfaced, review rate), a per-class table with the live thresholds, and the confusion matrix. Leads with whether those figures were measured under the thresholds actually being served. Every number is read from a file; an unavailable artifact is reported as unavailable. |
 | History search / filter | `history-search-input` | Filters the table by record id, class code or pathology name. |
 | CSV export | history view | Client-side download of the history table, including the anatomic site. |
@@ -52,8 +53,9 @@ These appeared in the previous roadmap. None of them exist in the code:
 - **Progression assessment in the comparison view.** The view differences the two
   *model outputs* — that is arithmetic on stored softmax vectors. It computes nothing
   about the lesion itself: no growth, diameter, pigmentation or border metric exists
-  anywhere in the codebase, and nothing links two records to the same lesion or
-  patient, so no progression claim is available to make. A previous build shipped a
+  anywhere in the codebase. A case label now lets two scans be read as one lesion in
+  sequence, but it is an assertion by whoever typed it, and it changes only who is
+  making the claim of identity — never what is measured. A previous build shipped a
   "differential engine" that
   appeared to compute one: growth percentage, confidence, pigmentation density and
   border irregularity were all derived from `img.src.length % 25` — the length of the
@@ -68,6 +70,15 @@ These appeared in the previous roadmap. None of them exist in the code:
 entry was wrong and has been moved to the implemented table above.)
 
 ## Known issues
+
+- **Starting against a different database deletes the previous one's uploads.**
+  `init_db()` runs `sweep_orphans()` on every start, and it removes any upload file
+  no row references and older than the one-hour grace period. Pointing `DATABASE_URL`
+  at a second or empty database therefore wipes the images belonging to the first,
+  silently and at startup. Observed for real: a migration check against a temporary
+  database removed 154 uploads whose records still referenced them. The records
+  survive and degrade correctly (`has_image` false, the view says the image is no
+  longer stored), but the files are gone.
 
 - **`models/class_thresholds.json` mislabels its own metrics.** The file records
   `fitted_on: "calib+val splits (lesion-disjoint)"`, but the `per_class_metrics` stored

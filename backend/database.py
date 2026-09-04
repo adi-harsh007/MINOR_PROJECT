@@ -73,6 +73,7 @@ def _add_missing_columns():
         "anatomic_site": "VARCHAR(64)",
         "melanoma_alert": "BOOLEAN",
         "melanoma_probability": "FLOAT",
+        "case_label": "VARCHAR(64)",
     }
 
     with engine.begin() as conn:

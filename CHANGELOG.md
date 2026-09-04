@@ -5,7 +5,7 @@
 A defect-driven pass over the whole application. Every figure quoted below was
 measured on this machine; nothing here is estimated.
 
-Test suite: **41 → 107 tests**. A lint gate was added. The served model, its
+Test suite: **41 → 115 tests**. A lint gate was added. The served model, its
 weights and its decision thresholds are unchanged — no retraining happened and
 no published metric moved.
 
@@ -57,6 +57,67 @@ is now a single class toggle against component styles (`.nav-item.is-active`,
 no longer drift apart. Several of those strings referenced `bg-surface-elevated`,
 `bg-surface-base` and `border-surface-elevated`, which were never defined in the
 Tailwind config and silently rendered as nothing.
+
+### Case grouping: two scans can now be one lesion
+
+The comparison view could show two records and their full model output, but had
+to state that it could not know whether they showed the same lesion — nothing in
+the schema linked a scan to anything. A nullable `case_label` on the session
+closes that, added by the existing `_add_missing_columns()` migration and
+verified against a database created before the column existed.
+
+A case is simply the set of scans sharing a label. There is no cases table:
+nothing to create, nothing left orphaned when a case's last scan is deleted, and
+no second source of truth to fall out of step with the records. `GET /api/cases`
+derives them by grouping.
+
+Labels are set on the console at scan time — with a suggestion list drawn from
+labels already in use, so an existing lesion is picked rather than retyped into a
+near-miss that splits its history in two — and edited inline in History
+afterwards, which is when it usually becomes clear that two scans belong
+together. `PATCH /api/history/{id}` is guarded by the history *read* guard rather
+than the admin token: the change is non-destructive and reversible, and gating it
+behind `ADMIN_TOKEN` (unset by default) would make the feature unusable in the
+deployment the bundled UI is built for.
+
+In the comparison view, choosing a case narrows both pickers to its scans and
+preselects the oldest and the newest — the pair anyone tracking a lesion wants —
+and A and B are ordered chronologically so "earlier" and "later" are true.
+
+**What grouping does not license.** It changes who is making the claim of
+identity, and nothing else. The notice now reads "you have filed both scans under
+X — that is your assertion that they show the same lesion; the application did
+not determine it and cannot check it", and the half about measuring nothing is
+identical either way. No growth, diameter, pigmentation or border metric exists
+anywhere in this codebase, and a label does not create one.
+
+Case labels are the only free text this application stores, which makes them the
+only value rendered into `innerHTML` that is not a server-constrained enum or a
+number. Every insertion point escapes: the history cell, the console datalist,
+the case filter, the comparison notice and the recorded-values table. One did not
+— `compareOptionLabel()` built `<option>` markup raw, and a label of
+`<img src=x onerror=alert(1)>` put two live nodes into the select. Fixed and
+verified at zero injected nodes across the view. The API deliberately stores the
+label verbatim rather than sanitising it: stripping markup server-side would
+corrupt legitimate labels while still leaving the client responsible.
+
+### Two things found the hard way
+
+**`has_image` could claim an image the image route would not serve.** It was
+derived from `resolve_stored_path()` alone, which answers whether a stored value
+points inside the upload directory — not whether anything is there. The client
+was told an image was retained and then handed a 404. It now stats the file, so
+the flag and the endpoint agree.
+
+**Starting against a different database deletes the previous one's uploads.**
+`init_db()` runs `sweep_orphans()` on every start, removing any upload no row
+references and older than the one-hour grace period. Pointing `DATABASE_URL` at a
+second or empty database therefore wipes the first's images, silently, at
+startup. Observed for real while verifying the migration against a temporary
+database: 154 uploads removed while their records still referenced them. The
+records survive and degrade correctly — which is how the `has_image` bug above
+surfaced — but the files are gone. Recorded under Known issues; the sweep's
+trigger conditions have not been changed.
 
 ### A model card, from figures that were already measured
 

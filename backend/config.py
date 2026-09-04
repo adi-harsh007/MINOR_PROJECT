@@ -49,6 +49,10 @@ ALLOW_UNCALIBRATED = os.getenv("ALLOW_UNCALIBRATED", "").strip().lower() in {"1"
 # repository; the model was trained and evaluated at 300px with no centre crop.
 IMG_SIZE = int(os.getenv("IMG_SIZE", 300))
 
+# Case labels are free text, so unlike the anatomic site there is no vocabulary
+# to validate against - only a length the column can hold.
+CASE_LABEL_MAX_LENGTH = 64
+
 # Recorded evaluation of the served checkpoint, surfaced by /api/model.
 #
 # EVALUATION_PATH holds the headline figures; SERVING_CHECK_PATH records the

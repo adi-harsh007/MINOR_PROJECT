@@ -681,6 +681,22 @@
                                     <button data-site="Head &amp; Neck" class="site-tag-btn anatomic-tag seg" aria-pressed="false">Head &amp; neck</button>
                                     <button data-site="Palms &amp; Soles" class="site-tag-btn anatomic-tag seg" aria-pressed="false">Palms &amp; soles</button>
                                 </div>
+
+                                <!-- Case label. The one thing that lets two scans be
+                                     compared as the same lesion rather than as two
+                                     unrelated images — and it is an assertion by
+                                     whoever types it, not something inferred. -->
+                                <div class="pt-1 flex flex-col gap-1.5 border-t border-outline-variant mt-1">
+                                    <label for="input-case-label" class="label pt-3">Case / lesion</label>
+                                    <input type="text" id="input-case-label" class="input w-full"
+                                           maxlength="64" autocomplete="off" list="case-label-suggestions"
+                                           placeholder="e.g. Left shoulder mole" />
+                                    <datalist id="case-label-suggestions"></datalist>
+                                    <p class="text-[12px] text-on-surface-muted">
+                                        Optional. Scans sharing a label can be compared as one lesion over time.
+                                        Can be set or changed later from History.
+                                    </p>
+                                </div>
                             </div>
 
                             <div class="panel p-4 flex flex-col gap-3 xl:flex-1 xl:overflow-hidden">
@@ -889,7 +905,16 @@
                     </div>
 
                     <!-- Record pickers -->
-                    <div class="px-4 sm:px-margin-desktop pt-4">
+                    <div class="px-4 sm:px-margin-desktop pt-4 flex flex-col gap-3">
+                        <div class="panel p-4 flex flex-col gap-1.5">
+                            <label for="compare-case-filter" class="label">Case</label>
+                            <select id="compare-case-filter" class="input w-full md:max-w-md">
+                                <option value="">All scans</option>
+                            </select>
+                            <p class="text-[12px] text-on-surface-muted" id="compare-case-hint">
+                                Pick a case to narrow both lists to its scans, oldest and newest preselected.
+                            </p>
+                        </div>
                         <div class="panel p-4 grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 md:gap-4 md:items-end">
                             <div class="flex flex-col gap-1.5">
                                 <label for="compare-select-a" class="label">Scan A</label>
@@ -961,7 +986,7 @@
                         </div>
 
                         <!-- At a glance -->
-                        <div class="grid grid-cols-2 xl:grid-cols-4 gap-3" id="compare-summary">
+                        <div class="grid grid-cols-2 xl:grid-cols-5 gap-3" id="compare-summary">
                             <div class="panel p-4">
                                 <span class="label">Predicted class</span>
                                 <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-agreement">&mdash;</p>
@@ -976,6 +1001,11 @@
                                 <span class="label">Between records</span>
                                 <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-interval">&mdash;</p>
                                 <p class="text-[12px] text-on-surface-muted mt-0.5">Recording times, not lesion age</p>
+                            </div>
+                            <div class="panel p-4">
+                                <span class="label">Case</span>
+                                <p class="text-[15px] font-semibold text-on-surface mt-1.5" id="compare-case">&mdash;</p>
+                                <p class="text-[12px] text-on-surface-muted mt-0.5" id="compare-case-detail">Operator-assigned</p>
                             </div>
                             <div class="panel p-4">
                                 <span class="label">Anatomic site</span>
@@ -1030,11 +1060,7 @@
                         <div class="panel-inset p-4 flex items-start gap-3">
                             <span class="material-symbols-outlined text-[20px] text-on-surface-muted shrink-0 mt-0.5">info</span>
                             <div class="text-[13px] text-on-surface-variant leading-5">
-                                <p>
-                                    <span class="font-semibold text-on-surface">These are two independent inferences.</span>
-                                    Nothing recorded here links a scan to a lesion or a patient, so the application cannot know
-                                    whether both images show the same lesion &mdash; that is your judgement, not its finding.
-                                </p>
+                                <p id="compare-identity-note"></p>
                                 <p class="mt-2">
                                     Every difference shown above is a difference between two model outputs. None of it is a
                                     measurement of the skin: no growth, diameter, pigmentation or border metric is computed
@@ -1085,7 +1111,7 @@
                             </div>
                             <div class="flex items-center gap-2">
                                 <label for="history-search-input" class="sr-only">Search scans</label>
-                                <input type="text" id="history-search-input" placeholder="Search diagnosis or ID" class="input w-full sm:w-60" />
+                                <input type="text" id="history-search-input" placeholder="Search diagnosis, case or ID" class="input w-full sm:w-60" />
                                 <button id="btn-export-csv" class="btn">
                                     <span class="material-symbols-outlined">download</span><span class="hidden sm:inline">CSV</span>
                                 </button>
@@ -1098,6 +1124,7 @@
                                     <tr class="border-b border-outline-variant">
                                         <th scope="col" class="label py-3 px-5">ID</th>
                                         <th scope="col" class="label py-3 px-5">Recorded</th>
+                                        <th scope="col" class="label py-3 px-5">Case</th>
                                         <th scope="col" class="label py-3 px-5">Prediction</th>
                                         <th scope="col" class="label py-3 px-5 text-right">Confidence</th>
                                         <th scope="col" class="label py-3 px-5">Flag</th>

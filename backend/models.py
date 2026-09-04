@@ -9,6 +9,11 @@ class DiagnosticSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     image_path = Column(String(500), nullable=False)
     anatomic_site = Column(String(64), nullable=True)
+    # Operator-assigned grouping: which lesion this scan is of. Nothing infers
+    # it and nothing validates it against reality - it records an assertion the
+    # person making it is responsible for, which is exactly why the comparison
+    # view attributes it to them rather than presenting it as a finding.
+    case_label = Column(String(64), nullable=True, index=True)
     status = Column(String(50), default="pending")  # pending | processing | completed | failed
 
     # Results
