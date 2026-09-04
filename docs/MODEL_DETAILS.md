@@ -330,6 +330,42 @@ Until then the system runs on Stage 1 alone and will accept some non-clinical
 photographs. Calibrate on data spanning the full range of skin tones you intend
 to serve — a gate fitted only to light skin reintroduces the bias removed above.
 
+#### How much data this stage needs
+
+**It cannot be fitted from the 21 images in `samples/`, and attempting it
+produces a gate that rejects every scan.** This was measured, not assumed.
+
+EfficientNet-B3 emits 1536-dimensional features, so the covariance has
+1,180,416 free parameters. Estimated from 21 samples it is rank-deficient; the
+pseudo-inverse then explodes along the ~1515 directions the data never
+constrained. Under leave-one-out — fit on 20, judge the held-out lesion —
+**21 of 21 held-out lesions were rejected**, at Mahalanobis distances around
+10⁶ against a cutoff of 18.
+
+The same run reported "OOD correctly rejected: 3/3 (100.0%)". That number is
+worthless on its own: a gate that rejects *everything* rejects out-of-
+distribution input perfectly. The script also reported "in-distribution wrongly
+rejected: 4.8%", because it measured false rejects on the very images it had
+just fitted to, where the cutoff is by construction the 99th percentile of those
+distances.
+
+`scripts/calibrate_ood.py` now holds a fraction of `--data-dir` back from
+fitting, reports the false-reject rate on that held-out portion, and **refuses
+to write** a gate that rejects more than `--max-false-reject` of it (default
+5%), or that cannot be validated at all. Override with `--force` only with a
+reason.
+
+Fitting this stage therefore requires the HAM10000 image set — the manifests in
+`models/splits/` reference `/kaggle/input/...` paths and the images are not in
+this repository. With the 5,975-image training split available, run:
+
+```bash
+python scripts/calibrate_ood.py --data-dir path/to/ham10000_images \
+    --ood-dir path/to/non_skin_images
+```
+
+and read the held-out false-reject rate before trusting the result.
+
 ### Stage 3: Confidence margin
 
 `argmax(probability - class threshold)`; a negative best margin is rejected as
