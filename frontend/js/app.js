@@ -1,5 +1,11 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   DermaScan AI 4.0 — Cyber-Clinical SPA Engine
+   DermaScan — single-page client for the lesion classifier API.
+
+   Presentation note: state that used to be applied by rewriting whole Tailwind
+   class strings is now a single class toggle against the component styles in
+   index.html (.nav-item.is-active, .seg.is-active, .btn.is-on, .chip--high…).
+   That keeps hover and selected visually distinct and stops the markup and the
+   script drifting apart.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const API_BASE = "/api";
@@ -12,6 +18,7 @@ const state = {
     panX: 0,
     panY: 0,
     heatmapVisible: false,
+    resultsHeatmapVisible: false,
     heatmapBase64: null,
     calibration: {
         brightness: 100,
@@ -19,7 +26,10 @@ const state = {
         saturation: 100
     },
     latestResult: null,
-    history: []
+    history: [],
+    // The two records the comparison view is showing, plus a slot id parked by
+    // the results view on its way here.
+    compare: { a: null, b: null, pendingA: null }
 };
 
 // ─── Pathology Class Descriptions & Codes ───────────────────────────────────
@@ -76,21 +86,25 @@ function toast(message, type = "info") {
     if (!container) {
         container = document.createElement("div");
         container.id = "toast-container";
-        container.className = "fixed top-4 right-4 z-50 flex flex-col gap-2";
+        // Below the 56px header, so notifications never sit on top of the
+        // export button they are often reporting on.
+        container.className = "fixed top-[68px] right-4 z-[60] flex flex-col gap-2 items-end";
         document.body.appendChild(container);
     }
     
     const colors = {
-        info: "bg-surface-elevated border-cyan-500/50 text-cyan-400",
-        success: "bg-surface-elevated border-emerald-500/50 text-emerald-400",
-        warning: "bg-surface-elevated border-amber-500/50 text-amber-400",
-        error: "bg-surface-elevated border-rose-500/50 text-rose-400"
+        info: "border-outline text-on-surface",
+        success: "border-risk-low/50 text-risk-low",
+        warning: "border-risk-mid/50 text-risk-mid",
+        error: "border-risk-high/50 text-risk-high"
     };
 
     const el = document.createElement("div");
-    el.className = `toast px-4 py-3 rounded-xl border font-mono text-xs shadow-2xl flex items-center gap-3 transition-all duration-300 transform translate-y-2 opacity-0 ${colors[type] || colors.info}`;
+    el.className = "toast max-w-[22rem] px-4 py-3 rounded-xl border bg-surface-container-high " +
+        "text-[13px] leading-5 shadow-lg flex items-start gap-2.5 transition-all duration-300 " +
+        `transform translate-y-2 opacity-0 ${colors[type] || colors.info}`;
     el.innerHTML = `
-        <span class="material-symbols-outlined text-base font-bold">${type === 'error' ? 'error' : type === 'success' ? 'check_circle' : 'info'}</span>
+        <span class="material-symbols-outlined text-[18px] shrink-0 mt-px">${type === 'error' ? 'error' : type === 'success' ? 'check_circle' : type === 'warning' ? 'warning' : 'info'}</span>
         <span>${message}</span>
     `;
     
@@ -133,6 +147,37 @@ async function apiCall(endpoint, options = {}) {
     }
 }
 
+// ─── Mobile navigation drawer ───────────────────────────────────────────────
+// Below the `lg` breakpoint the sidebar is translated off-canvas by CSS and
+// only `.is-open` brings it back, so the 256px rail no longer eats two thirds
+// of a phone screen.
+function openNavDrawer() {
+    const sidebar = document.getElementById("sidebar");
+    const backdrop = document.getElementById("nav-backdrop");
+    const opener = document.getElementById("btn-nav-open");
+    if (sidebar) sidebar.classList.add("is-open");
+    if (backdrop) backdrop.classList.remove("hidden");
+    if (opener) opener.setAttribute("aria-expanded", "true");
+}
+
+function closeNavDrawer() {
+    const sidebar = document.getElementById("sidebar");
+    const backdrop = document.getElementById("nav-backdrop");
+    const opener = document.getElementById("btn-nav-open");
+    if (sidebar) sidebar.classList.remove("is-open");
+    if (backdrop) backdrop.classList.add("hidden");
+    if (opener) opener.setAttribute("aria-expanded", "false");
+}
+
+// ─── Anatomic site selection (shared by the tag buttons and the gallery) ─────
+function setAnatomicSiteUI(site) {
+    document.querySelectorAll(".anatomic-tag").forEach(b => {
+        const isActive = b.getAttribute("data-site") === site;
+        b.classList.toggle("is-active", isActive);
+        b.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+}
+
 // ─── SPA Navigation Router ──────────────────────────────────────────────────
 function navigate(viewId, payload = null) {
 
@@ -146,22 +191,32 @@ function navigate(viewId, payload = null) {
     const targetView = document.getElementById(viewId);
     if (targetView) {
         targetView.classList.remove("hidden");
-        targetView.scrollIntoView({ behavior: "smooth" });
+        // Views are full-height panes, not anchors: scrollIntoView() on a pane
+        // taller than the viewport left the page part-scrolled, so the header
+        // and the first row of controls were cut off on arrival.
+        window.scrollTo({ top: 0, behavior: "auto" });
     }
 
-    // 3. Highlight sidebar links
+    // 3. Highlight sidebar links. `is-active` carries the whole selected style
+    //    (rail, tint, filled icon) so it cannot be confused with plain hover.
     document.querySelectorAll(".nav-item").forEach(link => {
-        const linkView = link.getAttribute("data-view");
-        if (linkView === viewId) {
-            link.className = "nav-item active flex items-center px-gutter py-4 transition-all group bg-primary/10 text-primary border-l-4 border-primary font-medium w-full";
+        const isActive = link.getAttribute("data-view") === viewId;
+        link.classList.toggle("is-active", isActive);
+        if (isActive) {
+            link.setAttribute("aria-current", "page");
         } else {
-            link.className = "nav-item flex items-center px-gutter py-4 transition-all group text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface border-l-4 border-transparent font-medium w-full";
+            link.removeAttribute("aria-current");
         }
     });
 
-    // 4. View-specific initialization
+    // 4. On small screens the sidebar is a drawer; a selection closes it.
+    closeNavDrawer();
+
+    // 5. View-specific initialization
     if (viewId === "view-analytics") {
         loadAnalyticsData();
+    } else if (viewId === "view-compare") {
+        loadCompareRecords();
     } else if (viewId === "view-results" && payload) {
         renderResultsView(payload);
     }
@@ -209,6 +264,41 @@ function resetViewportTransform() {
 }
 
 // ─── Grad-CAM AI Activation Heatmap Engine ──────────────────────────────────
+// The attribution map is computed over the whole 224x224 model input, so it
+// corresponds to the whole image and must cover exactly the pixels the image
+// occupies. The canvas carries intrinsic 224x224 dimensions and only
+// `max-h-full max-w-full`, which left it a 224px square floating in the middle
+// of a 600x450 photo — the hot region pointed at the wrong part of the lesion.
+// Measure the image's rendered content box (it is laid out with object-contain)
+// and place the canvas on top of it.
+function syncHeatmapCanvasToImage(
+        containerId = "preview-container",
+        imgId = "console-viewport-img",
+        canvasId = "console-heatmap-canvas") {
+    const container = document.getElementById(containerId);
+    const img = document.getElementById(imgId);
+    const canvas = document.getElementById(canvasId);
+    if (!container || !img || !canvas) return;
+    if (!img.naturalWidth || !img.naturalHeight) return;
+
+    const box = img.getBoundingClientRect();
+    const containerBox = container.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+
+    // The <img> box is already capped to the container; object-contain then
+    // letterboxes the bitmap inside that box.
+    const scale = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight);
+    const drawnW = img.naturalWidth * scale;
+    const drawnH = img.naturalHeight * scale;
+
+    canvas.style.left = `${(box.left - containerBox.left) + (box.width - drawnW) / 2}px`;
+    canvas.style.top = `${(box.top - containerBox.top) + (box.height - drawnH) / 2}px`;
+    canvas.style.width = `${drawnW}px`;
+    canvas.style.height = `${drawnH}px`;
+    canvas.style.maxWidth = "none";
+    canvas.style.maxHeight = "none";
+}
+
 function renderGradCamHeatmap(base64Data) {
     const canvas = document.getElementById("console-heatmap-canvas");
     if (!canvas) return;
@@ -222,8 +312,88 @@ function renderGradCamHeatmap(base64Data) {
     const img = new Image();
     img.onload = () => {
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        syncHeatmapCanvasToImage();
     };
     img.src = base64Data;
+}
+
+// ─── The analysed image on the result panel ─────────────────────────────────
+// The same attribution map as the console, over the stored image rather than
+// whatever the console happens to be showing.
+function syncResultsHeatmapCanvas() {
+    syncHeatmapCanvasToImage("results-image-wrap", "results-image", "results-heatmap-canvas");
+}
+
+function drawResultsHeatmap() {
+    const canvas = document.getElementById("results-heatmap-canvas");
+    if (!canvas || !state.heatmapBase64) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        syncResultsHeatmapCanvas();
+    };
+    img.src = state.heatmapBase64;
+}
+
+function setResultsHeatmapVisible(visible) {
+    const canvas = document.getElementById("results-heatmap-canvas");
+    const btn = document.getElementById("btn-results-heatmap");
+    state.resultsHeatmapVisible = visible;
+    if (canvas) canvas.classList.toggle("hidden", !visible);
+    if (btn) {
+        btn.classList.toggle("is-on", visible);
+        btn.setAttribute("aria-pressed", visible ? "true" : "false");
+    }
+    if (visible) drawResultsHeatmap();
+}
+
+// The stored upload is fetched back from the record rather than reused from the
+// console: it is the image the model was actually given, and it is unaffected by
+// the console's display sliders or by loading a different sample afterwards.
+function renderResultsImage(data) {
+    const img = document.getElementById("results-image");
+    const missing = document.getElementById("results-image-missing");
+    const btn = document.getElementById("btn-results-heatmap");
+    const note = document.getElementById("results-image-note");
+    if (!img || !missing) return;
+
+    setResultsHeatmapVisible(false);
+
+    // Grad-CAM is offered only when the API actually returned attribution.
+    if (btn) {
+        const available = Boolean(state.heatmapBase64);
+        btn.disabled = !available;
+        btn.title = available
+            ? "Overlay the model's Grad-CAM attribution map"
+            : "No Grad-CAM attribution was returned for this scan";
+    }
+    if (note) {
+        note.textContent = state.heatmapBase64
+            ? "As submitted. Display adjustments in the console are not applied here."
+            : "As submitted. No Grad-CAM attribution was returned for this scan.";
+    }
+
+    const showMissing = () => {
+        img.classList.add("hidden");
+        missing.classList.remove("hidden");
+        missing.classList.add("flex");
+    };
+
+    if (!data.session_id) {
+        showMissing();
+        return;
+    }
+
+    img.onerror = showMissing;
+    img.onload = () => {
+        missing.classList.add("hidden");
+        missing.classList.remove("flex");
+        img.classList.remove("hidden");
+        syncResultsHeatmapCanvas();
+    };
+    img.src = `${API_BASE}/history/${encodeURIComponent(data.session_id)}/image`;
 }
 
 function toggleGradCamHeatmap() {
@@ -239,16 +409,19 @@ function toggleGradCamHeatmap() {
         if (state.heatmapVisible) {
             renderGradCamHeatmap(state.heatmapBase64);
             canvas.classList.remove("hidden");
+            syncHeatmapCanvasToImage();
             if (toggleBtn) {
-                toggleBtn.className = "flex items-center gap-1.5 px-3 py-1 bg-primary/20 text-primary rounded border border-primary/50 transition-all font-data-sm text-data-sm shadow-[0_0_12px_rgba(0,212,255,0.4)] font-bold";
+                toggleBtn.classList.add("is-on");
+                toggleBtn.setAttribute("aria-pressed", "true");
             }
-            toast("Grad-CAM AI Activation Heatmap Enabled", "info");
+            toast("Grad-CAM overlay on", "info");
         } else {
             canvas.classList.add("hidden");
             if (toggleBtn) {
-                toggleBtn.className = "flex items-center gap-1.5 px-3 py-1 bg-surface-container hover:bg-surface-container-highest text-on-surface-variant hover:text-primary rounded border border-outline-variant/30 transition-all font-data-sm text-data-sm";
+                toggleBtn.classList.remove("is-on");
+                toggleBtn.setAttribute("aria-pressed", "false");
             }
-            toast("Grad-CAM AI Activation Heatmap Disabled", "info");
+            toast("Grad-CAM overlay off", "info");
         }
     }
 }
@@ -295,6 +468,12 @@ function handleFileSelected(file) {
     }
 
     state.selectedFile = file;
+
+    // The source chip kept naming the last reference sample after an upload
+    // replaced it, so the toolbar described an image that was no longer shown.
+    const statusTag = document.getElementById("image-status-tag");
+    if (statusTag) statusTag.textContent = `Uploaded · ${file.name}`;
+
     const reader = new FileReader();
     reader.onload = (e) => {
         const imageUrl = e.target.result;
@@ -316,8 +495,7 @@ function setConsoleViewportImage(src) {
 
     if (analyzeBtn) {
         analyzeBtn.disabled = false;
-        analyzeBtn.className = "flex items-center gap-2 px-6 py-2 bg-primary text-on-primary font-headline-md text-headline-md rounded-lg shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:shadow-[0_0_30px_rgba(0,212,255,0.6)] transition-all transform hover:-translate-y-0.5 cursor-pointer";
-        analyzeBtn.innerHTML = `<span class="material-symbols-outlined">analytics</span> Begin AI Analysis`;
+        setAnalyzeButtonIdle(analyzeBtn);
     }
 
     resetCalibration();
@@ -407,23 +585,20 @@ function renderSampleGallery() {
     if (!container) return;
 
     container.innerHTML = CLINICAL_SAMPLES.map(s => {
-        const badgeColor = s.category === 'Malignant' ? 'text-rose-400 bg-rose-500/10 border-rose-500/20' : s.category === 'Pre-Malignant' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
+        const chipClass = s.category === 'Malignant' ? 'chip chip--high'
+            : s.category === 'Pre-Malignant' ? 'chip chip--mid'
+            : s.category === 'Benign' ? 'chip chip--low'
+            : 'chip';
         return `
-            <div data-sample-id="${s.id}" class="sample-card p-3 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 hover:border-primary/40 cursor-pointer transition-all flex items-center justify-between group">
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-md overflow-hidden bg-surface-dim border border-outline-variant/30 flex-shrink-0">
-                        <img src="${s.url}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" alt="${s.name}" />
-                    </div>
-                    <div>
-                        <h4 class="text-xs font-bold text-on-surface group-hover:text-primary transition-colors">${s.name}</h4>
-                        <p class="text-[10px] text-on-surface-variant flex items-center gap-1 mt-0.5">
-                            <span>${s.site}</span> • 
-                            <span class="px-1.5 py-0.2 border rounded text-[9px] ${badgeColor}">${s.category}</span>
-                        </p>
-                    </div>
-                </div>
-                <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary text-[18px]">chevron_right</span>
-            </div>
+            <button type="button" data-sample-id="${s.id}"
+                    class="sample-card w-full text-left p-2.5 rounded-lg bg-surface-container border border-outline-variant hover:border-outline hover:bg-surface-container-high cursor-pointer transition-colors flex items-center gap-3">
+                <img src="${s.url}" class="w-11 h-11 rounded-md object-cover bg-surface-dim shrink-0" alt="" />
+                <span class="min-w-0 flex-1">
+                    <span class="block text-[13px] font-medium text-on-surface truncate">${s.name}</span>
+                    <span class="block text-[12px] text-on-surface-muted truncate mt-0.5">${s.site}</span>
+                </span>
+                <span class="${chipClass} shrink-0">${s.category}</span>
+            </button>
         `;
     }).join('');
 
@@ -488,19 +663,28 @@ function loadSampleImage(sampleInput) {
     const apiSite = toApiSite(sample.site);
     if (apiSite) {
         state.selectedAnatomicSite = apiSite;
-        document.querySelectorAll(".anatomic-tag").forEach(b => {
-            if (b.getAttribute("data-site") === apiSite) {
-                b.className = "anatomic-tag active px-3 py-2 bg-primary/10 border border-primary/30 text-primary rounded-lg font-data-sm text-data-sm hover:bg-primary/20 transition-all text-left font-bold";
-            } else {
-                b.className = "anatomic-tag px-3 py-2 bg-surface-container border border-outline-variant/20 text-on-surface-variant rounded-lg font-data-sm text-data-sm hover:bg-surface-container-high transition-all text-left";
-            }
-        });
+        setAnatomicSiteUI(apiSite);
     }
 
     const statusTag = document.getElementById("image-status-tag");
-    if (statusTag) statusTag.textContent = `SOURCE: SAMPLE (${(sample.name || 'CASE').toUpperCase()})`;
+    if (statusTag) statusTag.textContent = `Sample · ${sample.name || 'Case'}`;
 
-    toast(`Loaded clinical sample: ${sample.name || 'Case'}`, "info");
+    toast(`Loaded sample: ${sample.name || 'Case'}`, "info");
+}
+
+// ─── Analysis button and overlay states ─────────────────────────────────────
+function setAnalyzeButtonIdle(btn) {
+    if (!btn) return;
+    btn.classList.remove("is-busy");
+    btn.innerHTML = `<span class="material-symbols-outlined">play_arrow</span> Run analysis`;
+}
+
+function setAnalysisOverlay(visible) {
+    const overlay = document.getElementById("analysis-overlay");
+    if (!overlay) return;
+    // The overlay is a flex column; `hidden` alone loses to `flex`, so toggle both.
+    overlay.classList.toggle("hidden", !visible);
+    overlay.classList.toggle("flex", visible);
 }
 
 // ─── Diagnostic API Analysis Trigger ────────────────────────────────────────
@@ -516,8 +700,11 @@ async function runAnalysis() {
 
     // Lock button & show loading indicator
     analyzeBtn.disabled = true;
-    analyzeBtn.className = "flex items-center gap-2 px-6 py-2 bg-surface-container border border-primary/40 text-primary font-headline-md text-headline-md rounded-lg cursor-wait animate-pulse";
-    analyzeBtn.innerHTML = `<span class="material-symbols-outlined animate-spin text-lg">progress_activity</span> Computing Analysis...`;
+    analyzeBtn.classList.add("is-busy");
+    analyzeBtn.innerHTML = `<span class="material-symbols-outlined animate-spin">progress_activity</span> Analysing…`;
+    // The overlay existed in the markup but nothing ever unhid it, so a scan gave
+    // no feedback over the image itself. Show it for the duration of the request.
+    setAnalysisOverlay(true);
 
     try {
         const formData = new FormData();
@@ -564,9 +751,19 @@ async function runAnalysis() {
         toast(err.message, "error");
     } finally {
         analyzeBtn.disabled = false;
-        analyzeBtn.className = "flex items-center gap-2 px-6 py-2 bg-primary text-on-primary font-headline-md text-headline-md rounded-lg shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:shadow-[0_0_30px_rgba(0,212,255,0.6)] transition-all transform hover:-translate-y-0.5 cursor-pointer";
-        analyzeBtn.innerHTML = `<span class="material-symbols-outlined">analytics</span> Begin AI Analysis`;
+        setAnalyzeButtonIdle(analyzeBtn);
+        setAnalysisOverlay(false);
     }
+}
+
+// Millisecond timings from the API. Sub-millisecond values are common for the
+// queue wait on an idle server; rounding those to "0 ms" would read as a missing
+// measurement, so they keep one decimal.
+function formatMs(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
+    if (value < 10) return `${value.toFixed(1)} ms`;
+    return `${Math.round(value)} ms`;
 }
 
 // ─── Render Diagnostic Results View ─────────────────────────────────────────
@@ -591,43 +788,52 @@ function renderResultsView(data) {
         // Precedence: malignant prediction, then an unresolved melanoma alert,
         // then benign. The alert must outrank the benign banner - reassuring the
         // user while p(melanoma) is high is the dangerous combination.
+        // Sentence case, not shouted mono: the banner has to be read carefully,
+        // and all-caps at 12px is the hardest thing on the page to read.
+        const bannerBase = "px-4 py-3 rounded-xl border flex items-center gap-3";
+        const iconBase = "material-symbols-outlined text-[22px] shrink-0";
+        const textBase = "text-[13px] font-semibold leading-5";
+
         if (!isHighRisk && data.melanoma_alert) {
-            banner.className = "mb-6 px-6 py-4 rounded-xl border bg-amber-500/10 border-amber-500/40 flex items-center justify-between";
-            bannerIcon.className = "material-symbols-outlined text-amber-400 text-2xl animate-pulse";
+            banner.className = `${bannerBase} border-risk-mid/45 bg-risk-mid/10`;
+            bannerIcon.className = `${iconBase} text-risk-mid`;
             bannerIcon.textContent = "release_alert";
-            bannerText.className = "font-mono text-xs font-bold uppercase tracking-wider text-amber-400";
+            bannerText.className = `${textBase} text-risk-mid`;
             bannerText.textContent =
-                `MELANOMA NOT EXCLUDED — p(mel) ${(data.melanoma_probability * 100).toFixed(1)}% — SPECIALIST REVIEW RECOMMENDED`;
+                `Melanoma not excluded — p(mel) ${(data.melanoma_probability * 100).toFixed(1)}%. Specialist review recommended.`;
         } else if (isHighRisk) {
-            banner.className = "mb-6 px-6 py-4 rounded-xl border bg-rose-500/10 border-rose-500/30 flex items-center justify-between";
-            bannerIcon.className = "material-symbols-outlined text-rose-400 text-2xl animate-pulse";
+            banner.className = `${bannerBase} border-risk-high/45 bg-risk-high/10`;
+            bannerIcon.className = `${iconBase} text-risk-high`;
             bannerIcon.textContent = "warning";
-            bannerText.className = "font-mono text-xs font-bold uppercase tracking-wider text-rose-400";
-            bannerText.textContent = "CRITICAL PATHOLOGY ALERT — HIGH RISK MALIGNANT MORPHOLOGY DETECTED";
+            bannerText.className = `${textBase} text-risk-high`;
+            bannerText.textContent = "Predicted class is in the high-risk group. Specialist assessment is indicated.";
         } else {
-            banner.className = "mb-6 px-6 py-4 rounded-xl border bg-emerald-500/10 border-emerald-500/30 flex items-center justify-between";
-            bannerIcon.className = "material-symbols-outlined text-emerald-400 text-2xl";
+            banner.className = `${bannerBase} border-risk-low/45 bg-risk-low/10`;
+            bannerIcon.className = `${iconBase} text-risk-low`;
             bannerIcon.textContent = "check_circle";
-            bannerText.className = "font-mono text-xs font-bold uppercase tracking-wider text-emerald-400";
-            bannerText.textContent = "NO MALIGNANT PATTERN IDENTIFIED — THIS IS NOT A CLINICAL CLEARANCE";
+            bannerText.className = `${textBase} text-risk-low`;
+            bannerText.textContent = "No malignant pattern identified. This is not a clinical clearance.";
         }
     }
 
-    // 2. Radial Gauge Animation (SVG stroke-dashoffset: 264 - (264 * confidence))
+    // 2. Confidence gauge. Circumference is read off the SVG rather than
+    //    hardcoded, so changing the radius in the markup cannot silently
+    //    desynchronise the arc from the number printed inside it.
     const gaugeValue = document.getElementById("gauge-confidence-val");
     const gaugeCircle = document.getElementById("gauge-confidence-circle");
     const gaugeStatus = document.getElementById("gauge-risk-status");
 
-    const dashOffset = 264 - (264 * data.confidence);
-
     if (gaugeValue) gaugeValue.textContent = `${confidencePct}%`;
     if (gaugeCircle) {
-        gaugeCircle.style.strokeDashoffset = dashOffset;
-        gaugeCircle.style.stroke = isHighRisk ? "#f43f5e" : "#00d4ff";
+        const r = parseFloat(gaugeCircle.getAttribute("r")) || 46;
+        const circumference = 2 * Math.PI * r;
+        gaugeCircle.setAttribute("stroke-dasharray", circumference.toFixed(2));
+        gaugeCircle.style.strokeDashoffset = circumference * (1 - data.confidence);
+        gaugeCircle.style.stroke = isHighRisk ? "#e8746c" : "#6fc0a4";
     }
     if (gaugeStatus) {
-        gaugeStatus.textContent = isHighRisk ? "HIGH RISK" : "BENIGN";
-        gaugeStatus.className = `font-mono text-xs font-bold uppercase ${isHighRisk ? 'text-rose-400' : 'text-cyan-400'}`;
+        gaugeStatus.textContent = isHighRisk ? "High risk" : "Not flagged";
+        gaugeStatus.className = `label mt-1.5 ${isHighRisk ? 'text-risk-high' : 'text-risk-low'}`;
     }
 
     // 3. Pathology Header Card
@@ -640,9 +846,44 @@ function renderResultsView(data) {
     if (pathologyCode) pathologyCode.textContent = meta.code;
     if (pathologyType) {
         pathologyType.textContent = meta.type;
-        pathologyType.className = `px-3 py-1 rounded-lg text-xs font-mono font-bold uppercase border ${isHighRisk ? 'bg-rose-500/15 border-rose-500/40 text-rose-400' : 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400'}`;
+        pathologyType.className = `chip ${isHighRisk ? 'chip--high' : meta.type === 'Pre-Malignant' ? 'chip--mid' : 'chip--low'}`;
     }
     if (pathologyDesc) pathologyDesc.textContent = meta.desc;
+
+    // 3b. Fields that the previous markup shipped as fixed placeholder values —
+    //     a made-up session id, "Anterior Torso" and "142ms" — and that nothing
+    //     ever updated. They now show what the API actually returned, and the
+    //     latency tile (which the API does not report at all) was replaced by
+    //     the decision threshold, which it does.
+    const sessionEl = document.getElementById("res-session-id");
+    if (sessionEl) {
+        sessionEl.textContent = data.session_id
+            ? `Session #${data.session_id} · EfficientNet-B3`
+            : "EfficientNet-B3";
+    }
+    const siteEl = document.getElementById("res-anatomic-site");
+    if (siteEl) siteEl.textContent = data.anatomic_site || "Not recorded";
+
+    //     `threshold` is the decision threshold of the predicted class, not a
+    //     global one, so name the class alongside it — a bare "0.000" reads as
+    //     a missing value rather than a permissive threshold.
+    const thresholdEl = document.getElementById("res-threshold");
+    if (thresholdEl) {
+        thresholdEl.textContent = (typeof data.threshold === "number")
+            ? `${data.threshold.toFixed(3)} · ${data.prediction.toUpperCase()}`
+            : "—";
+    }
+
+    //     Server-side timings, shown separately because they are measured
+    //     separately: `inference_ms` is the forward pass, `queue_ms` the wait
+    //     for a concurrency slot. An older build printed a hardcoded "142ms"
+    //     here that no code path ever wrote to, so anything not sent by the
+    //     API renders as an em dash rather than a plausible-looking number.
+    const latencyEl = document.getElementById("res-latency");
+    if (latencyEl) latencyEl.textContent = formatMs(data.inference_ms);
+
+    const queueEl = document.getElementById("res-queue");
+    if (queueEl) queueEl.textContent = formatMs(data.queue_ms);
 
     // 4. 7-Class Probability Matrix
     const matrixContainer = document.getElementById("results-probability-matrix");
@@ -655,16 +896,25 @@ function renderResultsView(data) {
             const isTop = clsKey === data.prediction;
             const barWidth = Math.max(pct, 1.5);
 
-            const barColor = isTop ? (isHighRisk ? 'bg-rose-500' : 'bg-cyan-400') : 'bg-slate-700';
-            const labelColor = isTop ? (isHighRisk ? 'text-rose-400 font-bold' : 'text-cyan-400 font-bold') : 'text-slate-400';
+            // Only the predicted class is coloured, and it is coloured by risk.
+            // Everything else stays neutral so the eye lands on the one row that
+            // decides the outcome instead of on seven competing colours.
+            const barColor = isTop ? (isHighRisk ? 'bg-risk-high' : 'bg-risk-low') : 'bg-outline';
+            const nameColor = isTop ? 'text-on-surface font-semibold' : 'text-on-surface-variant';
+            const pctColor = isTop
+                ? (isHighRisk ? 'text-risk-high font-semibold' : 'text-risk-low font-semibold')
+                : 'text-on-surface-variant';
 
             return `
                 <div>
-                    <div class="flex justify-between text-xs font-mono mb-1.5">
-                        <span class="${labelColor}">${clsMeta.name} (${clsKey.toUpperCase()})</span>
-                        <span class="${labelColor}">${pct}%</span>
+                    <div class="flex items-baseline justify-between gap-3 mb-1.5">
+                        <span class="text-[13px] ${nameColor} truncate">
+                            ${clsMeta.name}
+                            <span class="font-data-sm text-[12px] text-on-surface-muted">${clsKey.toUpperCase()}</span>
+                        </span>
+                        <span class="font-data-sm text-[13px] tabular ${pctColor}">${pct}%</span>
                     </div>
-                    <div class="h-2 bg-surface-base rounded-full overflow-hidden border border-slate-800">
+                    <div class="h-1.5 bg-surface-container rounded-full overflow-hidden" role="img" aria-label="${clsMeta.name}: ${pct} percent">
                         <div class="${barColor} h-full rounded-full transition-all duration-700" style="width: ${barWidth}%"></div>
                     </div>
                 </div>
@@ -677,6 +927,9 @@ function renderResultsView(data) {
     //    result, including benign ones, directly contradicting the banner above it.
     const summaryEl = document.getElementById("res-clinical-summary");
     if (summaryEl) summaryEl.textContent = buildClinicalSummary(data, meta);
+
+    // 5b. The image the scan was run on.
+    renderResultsImage(data);
 
     // 6. OOD gate — the statistics the gate actually measured on this image, and
     //    the honest state of its calibration. Every value here comes from the API;
@@ -711,10 +964,32 @@ function buildClinicalSummary(data, meta) {
             `not excluded regardless of the leading class, and the scan is flagged for review.`);
     }
 
-    parts.push(
-        `Measured melanoma recall for this model is 0.800 on a lesion-disjoint hold-out — ` +
-        `about one melanoma in five is missed by the prediction itself. A result that is not ` +
-        `flagged is not a clinical clearance.`);
+    // The recall figure comes from the API, which reads it out of the threshold
+    // file shipped with the weights. It used to be the literal 0.800 written
+    // here, which would have kept asserting itself through any retrain with
+    // nothing able to catch it. If the server does not report one, the sentence
+    // is dropped rather than filled with a remembered number.
+    //
+    // Deliberately not described as measured "on a lesion-disjoint hold-out",
+    // which the old string claimed: the served artifact records `fitted_on` for
+    // its thresholds, not the split these metrics were measured on, so that
+    // provenance is not ours to assert here.
+    const recall = data.operating_point && data.operating_point.melanoma_recall;
+    if (typeof recall === "number" && recall >= 0 && recall <= 1) {
+        // The "one in N" gloss is only worth stating where it is both meaningful
+        // and not misleadingly precise: a recall of 0.999 is not "one in 1000",
+        // and a recall of 0 is not "one in 1". Zero itself is still reported —
+        // dropping the sentence would hide the worst case rather than state it.
+        const missedInEvery = Math.round(1 / (1 - recall));
+        const showGloss = recall < 0.995 && isFinite(missedInEvery) && missedInEvery >= 2;
+        parts.push(
+            `The melanoma recall recorded for this configuration is ${recall.toFixed(3)}` +
+            (showGloss
+                ? ` — roughly one melanoma in ${missedInEvery} is missed by the prediction itself.`
+                : `.`));
+    }
+
+    parts.push("A result that is not flagged is not a clinical clearance.");
 
     return parts.join(" ");
 }
@@ -739,10 +1014,8 @@ function renderOodPanel(data) {
     // The scan reached this view, so stage 1 accepted it. That is all that can be
     // claimed — and only stage 1 ran unless the feature-space stage is fitted.
     if (badge) {
-        badge.textContent = m ? "STAGE 1 PASSED" : "NOT REPORTED";
-        badge.className = "px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase " +
-            (m ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-               : "bg-surface-container text-on-surface-variant border border-outline-variant/40");
+        badge.textContent = m ? "Stage 1 passed" : "Not reported";
+        badge.className = "chip " + (m ? "chip--low" : "");
     }
     if (statusText) {
         statusText.textContent = m
@@ -760,47 +1033,256 @@ function renderOodPanel(data) {
             ? "Feature-space stage: active."
             : "Feature-space stage: not fitted, did not run.");
         note.textContent = bits.join(" ");
-        note.className = "text-[10px] font-data-sm " +
+        note.className = "text-[12px] leading-5 " +
             ((data.ood_calibrated && data.ood_feature_stage_active)
-                ? "text-on-surface-variant" : "text-amber-400");
+                ? "text-on-surface-muted" : "text-risk-mid");
     }
 }
 
-// ─── Clinical PDF Report Generator ─────────────────────────────────────────
-function downloadClinicalReport() {
-    const reportElement = document.getElementById("view-results");
-    if (!reportElement) {
-        toast("No diagnostic results available to export.", "warning");
-        return;
-    }
+// ─── Printed / exported report ──────────────────────────────────────────────
+// A document built for paper, not a screenshot of the screen. The previous
+// export handed html2pdf the live results view, so the "clinical report" was a
+// picture of a dark dashboard — neon on near-black, cropped mid-card by the page
+// break, and with no image of the lesion anywhere in it, because the panel had
+// none. Everything below is drawn from `state.latestResult`; nothing is invented
+// to fill a field, and a value the API did not send prints as an em dash.
 
+function escapeHtml(value) {
+    return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function reportFlagClass(data) {
+    if (data.is_high_risk) return "pr-flag--high";
+    if (data.melanoma_alert) return "pr-flag--mid";
+    return "pr-flag--low";
+}
+
+function reportFlagText(data) {
+    if (data.is_high_risk) return "High-risk group";
+    if (data.melanoma_alert) return "Melanoma not excluded";
+    return "Not flagged";
+}
+
+function buildPrintReport(data) {
+    const host = document.getElementById("print-report");
+    if (!host || !data) return null;
+
+    const meta = PATHOLOGY_META[data.prediction] || {
+        name: data.prediction.toUpperCase(), code: "—", type: "—", desc: ""
+    };
+    const generated = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${generated.getFullYear()}-${pad(generated.getMonth() + 1)}-` +
+                  `${pad(generated.getDate())} ${pad(generated.getHours())}:${pad(generated.getMinutes())}`;
+
+    const scores = data.scores || {};
+    const rows = Object.entries(scores)
+        .sort((a, b) => b[1] - a[1])
+        .map(([cls, p]) => {
+            const m = PATHOLOGY_META[cls] || { name: cls.toUpperCase() };
+            const pct = (p * 100);
+            const isTop = cls === data.prediction;
+            return `
+                <tr class="${isTop ? "pr-top" : ""}">
+                    <td>${escapeHtml(m.name)}</td>
+                    <td style="color:#5b6672">${escapeHtml(cls.toUpperCase())}</td>
+                    <td class="pr-num">${pct.toFixed(1)}%</td>
+                    <td style="width:38%"><div class="pr-bar"><span style="width:${Math.max(pct, 0.6)}%"></span></div></td>
+                </tr>`;
+        }).join("");
+
+    const m = data.ood_metrics || {};
+    const oodValue = (key) => (typeof m[key] === "number" ? m[key].toFixed(3) : "—");
+    const gateNote = [
+        data.ood_calibrated
+            ? "Gate thresholds: fitted to data."
+            : "Gate thresholds: provisional defaults, not yet fitted.",
+        data.ood_feature_stage_active
+            ? "Feature-space stage: active."
+            : "Feature-space stage: not fitted, did not run."
+    ].join(" ");
+
+    // Both figures are assembled here rather than patched in afterwards, so the
+    // node is complete the moment it is built — the print fallback renders the
+    // same document as the PDF export, and an absent image is a labelled
+    // placeholder instead of a broken-image glyph.
+    const submittedFigure = data.session_id ? `
+        <figure class="pr-col">
+            <img id="pr-image" src="${API_BASE}/history/${encodeURIComponent(data.session_id)}/image" alt="" />
+            <figcaption>The image the model was given, as stored.</figcaption>
+        </figure>` : `
+        <figure class="pr-col">
+            <div class="pr-nofig">Not available</div>
+            <figcaption>The stored image for this scan could not be located.</figcaption>
+        </figure>`;
+
+    const heatmapFigure = state.heatmapBase64 ? `
+        <figure class="pr-col">
+            <img src="${state.heatmapBase64}" alt="" />
+            <figcaption>Grad-CAM attribution over the 224&times;224 model input. Indicates where
+            the network attended, not lesion boundaries.</figcaption>
+        </figure>` : `
+        <figure class="pr-col">
+            <div class="pr-nofig">Not available</div>
+            <figcaption>No Grad-CAM attribution was returned for this scan.</figcaption>
+        </figure>`;
+
+    host.innerHTML = `
+        <div class="pr-head">
+            <div>
+                <h1>Lesion classification report</h1>
+                <div class="pr-sub">DermaScan &middot; EfficientNet-B3, 7-class, trained on HAM10000</div>
+            </div>
+            <div class="pr-meta">
+                Session ${data.session_id ? "#" + escapeHtml(data.session_id) : "—"}<br />
+                Generated ${escapeHtml(stamp)}
+            </div>
+        </div>
+
+        <div class="pr-block">
+            <h2>Submitted image</h2>
+            <div class="pr-cols">
+                ${submittedFigure}
+                ${heatmapFigure}
+            </div>
+        </div>
+
+        <div class="pr-block">
+            <h2>Classification</h2>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px">
+                <p class="pr-headline">${escapeHtml(meta.name)}</p>
+                <span class="pr-flag ${reportFlagClass(data)}">${reportFlagText(data)}</span>
+            </div>
+            <div class="pr-sub" style="margin-bottom:10px">
+                ${escapeHtml(data.prediction.toUpperCase())} &middot; ${escapeHtml(meta.code)} &middot;
+                confidence ${(data.confidence * 100).toFixed(1)}%
+            </div>
+            <dl class="pr-kv">
+                <div><dt>Anatomic site</dt><dd>${escapeHtml(data.anatomic_site || "Not recorded")}</dd></div>
+                <div><dt>Decision threshold</dt><dd>${typeof data.threshold === "number"
+                    ? data.threshold.toFixed(3) + " · " + escapeHtml(data.prediction.toUpperCase()) : "—"}</dd></div>
+                <div><dt>p(melanoma)</dt><dd>${typeof data.melanoma_probability === "number"
+                    ? (data.melanoma_probability * 100).toFixed(1) + "%" : "—"}</dd></div>
+                <div><dt>Model inference</dt><dd>${formatMs(data.inference_ms)}</dd></div>
+            </dl>
+        </div>
+
+        <div class="pr-block">
+            <h2>Probability across all seven classes</h2>
+            <table>
+                <thead>
+                    <tr><th>Class</th><th>Code</th><th class="pr-num">Probability</th><th></th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+
+        <div class="pr-block">
+            <h2>Input screening</h2>
+            <dl class="pr-kv" style="margin-bottom:8px">
+                <div><dt>Rel. contrast</dt><dd>${oodValue("rel_contrast")}</dd></div>
+                <div><dt>High-freq ratio</dt><dd>${oodValue("hf_ratio")}</dd></div>
+                <div><dt>Blue-green hue</dt><dd>${oodValue("blue_green")}</dd></div>
+                <div><dt>Stage 1</dt><dd>${data.ood_metrics ? "Passed" : "Not reported"}</dd></div>
+            </dl>
+            <div class="pr-sub">${escapeHtml(gateNote)}</div>
+        </div>
+
+        <div class="pr-block">
+            <h2>Summary</h2>
+            <p style="margin:0 0 10px">${escapeHtml(buildClinicalSummary(data, meta))}</p>
+            <div class="pr-note">
+                <strong>This is not a diagnosis.</strong> The output above is a single
+                classifier's probability distribution over seven lesion classes, produced from
+                one image with no clinical context, history or examination. It requires
+                correlation by a qualified clinician and is not a substitute for one. The
+                system measures nothing about the lesion itself &mdash; no size, growth,
+                pigmentation or border metric is computed &mdash; and a negative result is not
+                a clearance.
+            </div>
+        </div>
+
+        <div class="pr-foot">
+            <span>DermaScan &middot; research decision-support tool</span>
+            <span>Session ${data.session_id ? "#" + escapeHtml(data.session_id) : "—"} &middot; ${escapeHtml(stamp)}</span>
+        </div>
+    `;
+
+    return host;
+}
+
+// html2canvas cannot render a `display:none` subtree, so the report has to be
+// laid out for the capture. It must NOT be pushed off-screen to hide it: given
+// an absolutely or fixed positioned element, html2pdf returns a blank page with
+// no error (measured here as a 3 KB PDF against 728 KB for the same content in
+// normal flow). Visibility is handled by #print-report-clip, a zero-height
+// overflow:hidden parent, which leaves the report statically positioned.
+function showReportForCapture(host) {
+    host.style.display = "block";
+}
+
+function hideReport(host) {
+    host.style.display = "";
+}
+
+// Resolve once every image in the report has settled. Capturing before they load
+// produced a report with empty frames where the lesion should be.
+function whenReportImagesSettle(host) {
+    const images = [...host.querySelectorAll("img")].filter(img => img.getAttribute("src"));
+    return Promise.all(images.map(img => (img.complete && img.naturalWidth)
+        ? Promise.resolve()
+        : new Promise(resolve => {
+            img.addEventListener("load", resolve, { once: true });
+            img.addEventListener("error", resolve, { once: true });
+        })));
+}
+
+async function downloadClinicalReport() {
     // The export button lives in the always-visible top bar, so it can be pressed
-    // with no scan run and the results panel hidden. html2pdf would then render a
-    // blank or placeholder page and present it as a clinical report.
+    // with no scan run. html2pdf would then render a blank or placeholder page and
+    // present it as a clinical report.
     if (!state.latestResult) {
         toast("Run a scan before exporting a report.", "warning");
         return;
     }
-    if (reportElement.classList.contains("hidden")) {
-        navigate("view-results", state.latestResult);
+
+    const data = state.latestResult;
+    const host = buildPrintReport(data);
+    if (!host) {
+        toast("Could not assemble the report.", "error");
+        return;
     }
 
-    toast("Generating Clinical Consultation PDF Report...", "info");
-
-    const opt = {
-        margin:       0.5,
-        filename:     `DermaScan_Report_${state.latestResult?.prediction || 'Scan'}_${new Date().toISOString().slice(0,10)}.pdf`,
-        image:        { type: 'jpeg', quality: 0.98 },
-        html2canvas:  { scale: 2, useCORS: true, backgroundColor: '#090d16' },
-        jsPDF:        { unit: 'in', format: 'letter', orientation: 'portrait' }
-    };
-
-    if (window.html2pdf) {
-        window.html2pdf().set(opt).from(reportElement).save()
-            .then(() => toast("Report downloaded successfully!", "success"))
-            .catch(err => toast("PDF generation error: " + err.message, "error"));
-    } else {
+    if (!window.html2pdf) {
+        // The print stylesheet renders the same node, so the fallback produces
+        // the same document rather than a printout of the dashboard.
+        await whenReportImagesSettle(host);
         window.print();
+        return;
+    }
+
+    toast("Building report…", "info");
+    showReportForCapture(host);
+    try {
+        await whenReportImagesSettle(host);
+        await window.html2pdf().set({
+            margin:      [14, 14, 14, 14],
+            filename:    `DermaScan_${data.prediction}_${data.session_id || "scan"}_` +
+                         `${new Date().toISOString().slice(0, 10)}.pdf`,
+            image:       { type: "jpeg", quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+            jsPDF:       { unit: "mm", format: "letter", orientation: "portrait" },
+            // Honour the page-break rules on .pr-block so a section is never
+            // sliced in half by the page boundary.
+            pagebreak:   { mode: ["css", "legacy"] }
+        }).from(host).save();
+        toast("Report downloaded.", "success");
+    } catch (err) {
+        toast("Could not generate the PDF: " + err.message, "error");
+    } finally {
+        hideReport(host);
     }
 }
 
@@ -811,9 +1293,9 @@ async function loadAnalyticsData() {
 
     historyTableBody.innerHTML = `
         <tr>
-            <td colspan="6" class="py-12 text-center text-slate-500 font-mono text-xs">
-                <span class="material-symbols-outlined animate-spin text-cyan-400 text-2xl mb-2">progress_activity</span>
-                <p>Loading historical diagnostic records...</p>
+            <td colspan="6" class="py-14 text-center text-on-surface-muted text-[13px]">
+                <span class="material-symbols-outlined animate-spin text-[22px] block mb-2">progress_activity</span>
+                Loading records&hellip;
             </td>
         </tr>
     `;
@@ -852,9 +1334,10 @@ function renderHistoryTable(records) {
     if (!records.length) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" class="py-12 text-center text-slate-500 font-mono text-xs">
-                    <span class="material-symbols-outlined text-3xl mb-2 text-slate-600">inbox</span>
-                    <p>No historical scans found in SQLite database.</p>
+                <td colspan="6" class="py-14 text-center text-on-surface-muted">
+                    <span class="material-symbols-outlined text-[28px] block mb-2">inbox</span>
+                    <p class="text-[14px] text-on-surface-variant">No scans recorded yet</p>
+                    <p class="text-[13px] mt-1">Run one from the scan console and it will appear here.</p>
                 </td>
             </tr>
         `;
@@ -875,20 +1358,20 @@ function renderHistoryTable(records) {
         const isHigh = log.is_high_risk;
 
         return `
-            <tr class="border-b border-surface-elevated hover:bg-surface-elevated/40 transition-colors">
-                <td class="py-4 px-4 font-mono text-xs text-slate-400">#${log.id}</td>
-                <td class="py-4 px-4 font-mono text-xs text-slate-300">${dateStr} <span class="text-slate-500">${timeStr}</span></td>
-                <td class="py-4 px-4 font-mono text-xs font-bold text-slate-200">${meta.name} <span class="text-cyan-400">(${log.prediction.toUpperCase()})</span></td>
-                <td class="py-4 px-4 font-mono text-xs font-bold ${isHigh ? 'text-rose-400' : 'text-cyan-400'}">${confPct}%</td>
-                <td class="py-4 px-4">
+            <tr class="border-b border-outline-variant hover:bg-surface-container transition-colors">
+                <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-muted">#${log.id}</td>
+                <td class="py-3 px-5 font-data-sm text-[12px] text-on-surface-variant tabular">${dateStr} <span class="text-on-surface-muted">${timeStr}</span></td>
+                <td class="py-3 px-5 text-[13px] text-on-surface">${meta.name} <span class="font-data-sm text-[12px] text-on-surface-muted">${log.prediction.toUpperCase()}</span></td>
+                <td class="py-3 px-5 font-data-sm text-[13px] tabular text-right ${isHigh ? 'text-risk-high' : 'text-on-surface'}">${confPct}%</td>
+                <td class="py-3 px-5">
                     ${isHigh
-                        ? `<span class="px-2.5 py-1 bg-rose-500/15 border border-rose-500/30 text-rose-400 font-mono text-[10px] font-bold uppercase rounded-md">HIGH RISK</span>`
-                        : `<span class="px-2.5 py-1 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-mono text-[10px] font-bold uppercase rounded-md">BENIGN</span>`
+                        ? `<span class="chip chip--high">High risk</span>`
+                        : `<span class="chip chip--low">Not flagged</span>`
                     }
                 </td>
-                <td class="py-4 px-4 text-right">
-                    <button onclick="deleteHistoryRecord(${log.id})" class="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors" title="Delete Log">
-                        <span class="material-symbols-outlined text-base">delete</span>
+                <td class="py-3 px-5 text-right">
+                    <button onclick="deleteHistoryRecord(${log.id})" class="btn-icon hover:text-risk-high" aria-label="Delete record ${log.id}" title="Delete record">
+                        <span class="material-symbols-outlined">delete</span>
                     </button>
                 </td>
             </tr>
@@ -989,6 +1472,337 @@ function exportHistoryCSV() {
     toast("CSV history report exported successfully!", "success");
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Compare view
+
+   Two recorded scans, chosen from history. The previous version accepted loose
+   image uploads into both slots, so it could only ever show pixels: an upload
+   has not been through the model, so there was nothing to put beside it. Every
+   figure rendered here comes from a stored inference on the image next to it.
+
+   What this deliberately does not do: assert that the two images show the same
+   lesion. Nothing in the schema links a scan to a lesion or a patient, so that
+   claim is not available to the application. Differences shown are differences
+   between two model outputs, never measurements of skin. This is the same line
+   the removed "differential engine" crossed when it derived lesion growth from
+   the length of a base64 string.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Fixed order, high-risk group first. A table whose rows move between record
+// pairs cannot be read across pairs, so this deliberately does not sort by
+// probability the way the single-result panel does.
+const COMPARE_CLASS_ORDER = ["mel", "bcc", "akiec", "nv", "bkl", "df", "vasc"];
+const HIGH_RISK_CLASSES = ["mel", "bcc", "akiec"];
+
+const compareZoom = { a: 1.0, b: 1.0, linked: true };
+
+function applyCompareZoom() {
+    const imgLeft = document.getElementById("img-compare-left");
+    const imgRight = document.getElementById("img-compare-right");
+    if (imgLeft) imgLeft.style.transform = `scale(${compareZoom.a})`;
+    if (imgRight) imgRight.style.transform = `scale(${compareZoom.b})`;
+}
+
+function formatPct(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    return `${(value * 100).toFixed(1)}%`;
+}
+
+// Differences between two percentages are percentage points, not percent.
+function formatDeltaPP(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    const pp = value * 100;
+    if (Math.abs(pp) < 0.05) return "0.0 pp";
+    return `${pp > 0 ? "+" : "−"}${Math.abs(pp).toFixed(1)} pp`;
+}
+
+function formatInterval(msA, msB) {
+    if (!isFinite(msA) || !isFinite(msB)) return "—";
+    const ms = Math.abs(msB - msA);
+    const minutes = ms / 60000;
+    if (minutes < 1) return "under a minute";
+    if (minutes < 60) return `${Math.round(minutes)} min`;
+    const hours = minutes / 60;
+    if (hours < 48) return `${hours.toFixed(hours < 10 ? 1 : 0)} h`;
+    const days = hours / 24;
+    if (days < 60) return `${Math.round(days)} days`;
+    return `${(days / 30.44).toFixed(1)} months`;
+}
+
+function formatRecordedAt(iso) {
+    const dt = new Date(iso);
+    if (isNaN(dt)) return "—";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ` +
+           `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+function compareOptionLabel(rec) {
+    const meta = PATHOLOGY_META[rec.prediction] || { name: rec.prediction };
+    return `#${rec.id} · ${meta.name} · ${formatPct(rec.confidence)} · ${formatRecordedAt(rec.created_at)}`;
+}
+
+// Populate both pickers from whatever history is loaded, keeping any selection
+// the user has already made.
+function populateCompareSelectors() {
+    const records = state.history || [];
+    ["A", "B"].forEach(slot => {
+        const select = document.getElementById(`compare-select-${slot.toLowerCase()}`);
+        if (!select) return;
+        const chosen = select.value;
+        select.innerHTML = `<option value="">Select a recorded scan…</option>` +
+            records.map(r => `<option value="${r.id}">${compareOptionLabel(r)}</option>`).join("");
+        if (chosen && records.some(r => String(r.id) === String(chosen))) {
+            select.value = chosen;
+        }
+    });
+}
+
+async function loadCompareRecords(force = false) {
+    if (force || !state.history || !state.history.length) {
+        try {
+            state.history = await apiCall("/history");
+        } catch (err) {
+            toast("Could not load scan records: " + err.message, "error");
+            return;
+        }
+    }
+    populateCompareSelectors();
+
+    // A scan that has just finished is the one you want in slot A.
+    if (state.compare.pendingA) {
+        const id = state.compare.pendingA;
+        state.compare.pendingA = null;
+        const select = document.getElementById("compare-select-a");
+        if (select && state.history.some(r => String(r.id) === String(id))) {
+            select.value = String(id);
+            await setCompareSlot("A", id);
+        }
+    }
+    renderCompare();
+}
+
+// Each slot's in-flight request is tagged, so changing the picker again before
+// the previous fetch returns cannot let the older response land last and
+// silently show a record the picker is no longer pointing at.
+const compareRequest = { a: 0, b: 0 };
+
+async function setCompareSlot(slot, id) {
+    const key = slot === "A" ? "a" : "b";
+    const ticket = ++compareRequest[key];
+
+    if (!id) {
+        state.compare[key] = null;
+        renderCompare();
+        return;
+    }
+    try {
+        // Read the record back rather than trusting the cached list row: the
+        // list is capped and can be stale, and a record deleted in another tab
+        // should fail here rather than render as a comparison.
+        const record = await apiCall(`/history/${encodeURIComponent(id)}`);
+        if (ticket !== compareRequest[key]) return;
+        state.compare[key] = record;
+    } catch (err) {
+        if (ticket !== compareRequest[key]) return;
+        state.compare[key] = null;
+        toast(`Could not load scan #${id}: ${err.message}`, "error");
+    }
+    renderCompare();
+}
+
+function swapCompareSlots() {
+    const selectA = document.getElementById("compare-select-a");
+    const selectB = document.getElementById("compare-select-b");
+    const { a, b } = state.compare;
+    state.compare.a = b;
+    state.compare.b = a;
+    if (selectA && selectB) {
+        const va = selectA.value;
+        selectA.value = selectB.value;
+        selectB.value = va;
+    }
+    const za = compareZoom.a;
+    compareZoom.a = compareZoom.b;
+    compareZoom.b = za;
+    renderCompare();
+}
+
+function renderCompareImage(slot, rec) {
+    const isA = slot === "A";
+    const img = document.getElementById(isA ? "img-compare-left" : "img-compare-right");
+    const missing = document.getElementById(isA ? "compare-a-missing" : "compare-b-missing");
+    if (!img || !missing) return;
+
+    const showMissing = () => {
+        img.classList.add("hidden");
+        missing.classList.remove("hidden");
+        missing.classList.add("flex");
+    };
+
+    if (!rec.has_image) {
+        showMissing();
+        return;
+    }
+
+    // Retention and the orphan sweep can remove a file while its row survives,
+    // so a 404 here is an expected outcome, not a failure to report.
+    img.onerror = showMissing;
+    img.onload = () => {
+        missing.classList.add("hidden");
+        missing.classList.remove("flex");
+        img.classList.remove("hidden");
+    };
+    img.src = `${API_BASE}/history/${encodeURIComponent(rec.id)}/image`;
+}
+
+function renderCompareHeader(slot, rec) {
+    const isA = slot === "A";
+    const caption = document.getElementById(isA ? "compare-a-caption" : "compare-b-caption");
+    const chip = document.getElementById(isA ? "compare-a-chip" : "compare-b-chip");
+    const meta = PATHOLOGY_META[rec.prediction] || { name: rec.prediction };
+
+    if (caption) caption.textContent = `#${rec.id} · ${formatRecordedAt(rec.created_at)}`;
+    if (chip) {
+        chip.textContent = `${meta.name} ${formatPct(rec.confidence)}`;
+        chip.className = "chip shrink-0 " + (rec.is_high_risk ? "chip--high" : "chip--low");
+    }
+}
+
+function renderCompareSummary(a, b) {
+    const agrees = a.prediction === b.prediction;
+    const metaA = PATHOLOGY_META[a.prediction] || { name: a.prediction };
+    const metaB = PATHOLOGY_META[b.prediction] || { name: b.prediction };
+
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
+
+    set("compare-agreement", agrees ? "Same" : "Different");
+    set("compare-agreement-detail", agrees
+        ? metaA.name
+        : `A: ${metaA.name} · B: ${metaB.name}`);
+
+    const confDelta = b.confidence - a.confidence;
+    set("compare-conf-delta", formatDeltaPP(confDelta));
+    set("compare-conf-detail", agrees
+        ? `${formatPct(a.confidence)} → ${formatPct(b.confidence)}`
+        : "Different classes — not a like-for-like change");
+
+    set("compare-interval", formatInterval(
+        new Date(a.created_at).getTime(), new Date(b.created_at).getTime()));
+
+    const siteA = a.anatomic_site || "Not recorded";
+    const siteB = b.anatomic_site || "Not recorded";
+    set("compare-site", siteA === siteB ? siteA : `A: ${siteA} · B: ${siteB}`);
+}
+
+function renderCompareClassTable(a, b) {
+    const tbody = document.getElementById("compare-class-table");
+    if (!tbody) return;
+
+    const scoresA = a.scores || {};
+    const scoresB = b.scores || {};
+
+    tbody.innerHTML = COMPARE_CLASS_ORDER.map(cls => {
+        const meta = PATHOLOGY_META[cls] || { name: cls.toUpperCase() };
+        const pA = typeof scoresA[cls] === "number" ? scoresA[cls] : null;
+        const pB = typeof scoresB[cls] === "number" ? scoresB[cls] : null;
+        const delta = (pA === null || pB === null) ? null : pB - pA;
+
+        // Diverging bar around a centre line. The magnitude can reach a full
+        // 100 points either way, so half the track is one point per percent.
+        const half = delta === null ? 0 : Math.min(Math.abs(delta) * 100 / 2, 50);
+        const positive = (delta || 0) > 0;
+        const bar = delta === null ? "" : `
+            <div class="relative h-1.5 w-full bg-surface-container rounded-full">
+                <span class="absolute inset-y-0 left-1/2 w-px bg-outline"></span>
+                <span class="absolute inset-y-0 ${positive ? 'left-1/2' : 'right-1/2'} bg-primary rounded-full"
+                      style="width: ${half}%"></span>
+            </div>`;
+
+        const isHigh = HIGH_RISK_CLASSES.includes(cls);
+        const topA = cls === a.prediction;
+        const topB = cls === b.prediction;
+
+        return `
+            <tr class="border-b border-outline-variant/60">
+                <td class="py-2.5 pr-4 ${isHigh ? 'border-l-2 border-l-risk-high/60 pl-3' : 'pl-3'}">
+                    <span class="text-[13px] ${topA || topB ? 'text-on-surface font-medium' : 'text-on-surface-variant'}">${meta.name}</span>
+                    <span class="font-data-sm text-[12px] text-on-surface-muted ml-1.5">${cls.toUpperCase()}</span>
+                </td>
+                <td class="py-2.5 px-3 text-right font-data-sm text-[13px] tabular ${topA ? 'text-on-surface font-semibold' : 'text-on-surface-variant'}">${formatPct(pA)}</td>
+                <td class="py-2.5 px-3 text-right font-data-sm text-[13px] tabular ${topB ? 'text-on-surface font-semibold' : 'text-on-surface-variant'}">${formatPct(pB)}</td>
+                <td class="py-2.5 px-3 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${formatDeltaPP(delta)}</td>
+                <td class="py-2.5 pl-3">${bar}</td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function renderCompareDetailTable(a, b) {
+    const tbody = document.getElementById("compare-detail-table");
+    if (!tbody) return;
+
+    const yesNo = (v) => (v ? "Yes" : "No");
+    const metaName = (rec) => (PATHOLOGY_META[rec.prediction] || { name: rec.prediction }).name;
+    const num = (v, digits) => (typeof v === "number" ? v.toFixed(digits) : "—");
+
+    const rows = [
+        ["Session id", `#${a.id}`, `#${b.id}`],
+        ["Recorded", formatRecordedAt(a.created_at), formatRecordedAt(b.created_at)],
+        ["Predicted class", `${metaName(a)} (${a.prediction.toUpperCase()})`,
+                            `${metaName(b)} (${b.prediction.toUpperCase()})`],
+        ["Confidence", formatPct(a.confidence), formatPct(b.confidence)],
+        ["High-risk group", yesNo(a.is_high_risk), yesNo(b.is_high_risk)],
+        ["Melanoma alert", yesNo(a.melanoma_alert), yesNo(b.melanoma_alert)],
+        ["p(melanoma)", formatPct(a.melanoma_probability), formatPct(b.melanoma_probability)],
+        ["Decision threshold", num(a.threshold_used, 3), num(b.threshold_used, 3)],
+        ["Anatomic site", a.anatomic_site || "Not recorded", b.anatomic_site || "Not recorded"],
+        ["Image retained", yesNo(a.has_image), yesNo(b.has_image)],
+    ];
+
+    tbody.innerHTML = rows.map(([field, va, vb]) => `
+        <tr class="border-b border-outline-variant/60">
+            <td class="py-2.5 pr-4 text-[13px] text-on-surface-variant">${field}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${va}</td>
+            <td class="py-2.5 px-3 text-[13px] text-on-surface">${vb}</td>
+        </tr>
+    `).join("");
+}
+
+function renderCompare() {
+    const empty = document.getElementById("compare-empty");
+    const content = document.getElementById("compare-content");
+    const { a, b } = state.compare;
+
+    if (!a || !b) {
+        if (empty) empty.classList.remove("hidden");
+        if (content) {
+            content.classList.add("hidden");
+            content.classList.remove("flex");
+        }
+        return;
+    }
+
+    if (empty) empty.classList.add("hidden");
+    if (content) {
+        content.classList.remove("hidden");
+        content.classList.add("flex");
+    }
+
+    renderCompareHeader("A", a);
+    renderCompareHeader("B", b);
+    renderCompareImage("A", a);
+    renderCompareImage("B", b);
+    renderCompareSummary(a, b);
+    renderCompareClassTable(a, b);
+    renderCompareDetailTable(a, b);
+    applyCompareZoom();
+}
+
+
 // ─── Setup Event Listeners ──────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
     // 1. Sidebar & Inter-View SPA Router
@@ -998,6 +1812,39 @@ document.addEventListener("DOMContentLoaded", () => {
             const viewId = elem.getAttribute("data-view");
             if (viewId) navigate(viewId);
         });
+    });
+
+    // 1a2. Grad-CAM toggle on the result panel.
+    const btnResultsHeatmap = document.getElementById("btn-results-heatmap");
+    if (btnResultsHeatmap) {
+        btnResultsHeatmap.addEventListener("click", () => {
+            if (!state.heatmapBase64) {
+                toast("No Grad-CAM attribution is available for this scan.", "warning");
+                return;
+            }
+            setResultsHeatmapVisible(!state.resultsHeatmapVisible);
+        });
+    }
+
+    // 1a. Keep the Grad-CAM overlay locked to the image it explains.
+    const resyncHeatmaps = () => {
+        syncHeatmapCanvasToImage();
+        syncResultsHeatmapCanvas();
+    };
+    window.addEventListener("resize", resyncHeatmaps);
+    const viewportImgEl = document.getElementById("console-viewport-img");
+    if (viewportImgEl) viewportImgEl.addEventListener("load", () => syncHeatmapCanvasToImage());
+
+    // 1b. Mobile navigation drawer
+    const btnNavOpen = document.getElementById("btn-nav-open");
+    const btnNavClose = document.getElementById("btn-nav-close");
+    const navBackdrop = document.getElementById("nav-backdrop");
+
+    if (btnNavOpen) btnNavOpen.addEventListener("click", openNavDrawer);
+    if (btnNavClose) btnNavClose.addEventListener("click", closeNavDrawer);
+    if (navBackdrop) navBackdrop.addEventListener("click", closeNavDrawer);
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeNavDrawer();
     });
 
     // 2. Viewport Zoom & Pan Controls
@@ -1015,12 +1862,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // 4. Anatomic Site Tagger Buttons
     document.querySelectorAll(".anatomic-tag").forEach(tagBtn => {
         tagBtn.addEventListener("click", () => {
-            document.querySelectorAll(".anatomic-tag").forEach(b => {
-                b.className = "anatomic-tag px-3 py-2 bg-surface-container border border-outline-variant/20 text-on-surface-variant rounded-lg font-data-sm text-data-sm hover:bg-surface-container-high transition-all text-left";
-            });
-            tagBtn.className = "anatomic-tag active px-3 py-2 bg-primary/10 border border-primary/30 text-primary rounded-lg font-data-sm text-data-sm hover:bg-primary/20 transition-all text-left font-bold";
             state.selectedAnatomicSite = tagBtn.getAttribute("data-site");
-            toast(`Anatomic site set to: ${state.selectedAnatomicSite}`, "info");
+            setAnatomicSiteUI(state.selectedAnatomicSite);
+            toast(`Anatomic site: ${state.selectedAnatomicSite}`, "info");
         });
     });
 
@@ -1049,21 +1893,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (dropZone && fileInput) {
         dropZone.addEventListener("click", () => fileInput.click());
+        // The drop zone is exposed as a button, so it has to answer to the keys
+        // a button answers to.
+        dropZone.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInput.click();
+            }
+        });
         fileInput.addEventListener("change", (e) => {
             if (e.target.files.length > 0) handleFileSelected(e.target.files[0]);
         });
 
         dropZone.addEventListener("dragover", (e) => {
             e.preventDefault();
-            dropZone.classList.add("border-primary", "bg-primary/5");
+            dropZone.classList.add("ring-2", "ring-inset", "ring-primary", "bg-primary/5");
         });
         dropZone.addEventListener("dragleave", (e) => {
             e.preventDefault();
-            dropZone.classList.remove("border-primary", "bg-primary/5");
+            dropZone.classList.remove("ring-2", "ring-inset", "ring-primary", "bg-primary/5");
         });
         dropZone.addEventListener("drop", (e) => {
             e.preventDefault();
-            dropZone.classList.remove("border-primary", "bg-primary/5");
+            dropZone.classList.remove("ring-2", "ring-inset", "ring-primary", "bg-primary/5");
             if (e.dataTransfer.files.length > 0) handleFileSelected(e.dataTransfer.files[0]);
         });
     }
@@ -1083,9 +1935,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const cat = filterBtn.getAttribute("data-cat");
             
             document.querySelectorAll(".kh-filter-btn").forEach(b => {
-                b.className = "kh-filter-btn px-4 py-2 bg-surface-container text-on-surface-variant hover:text-on-surface font-data-sm text-data-sm rounded-lg transition-all cursor-pointer";
+                const isActive = b === filterBtn;
+                b.classList.toggle("is-active", isActive);
+                b.setAttribute("aria-pressed", isActive ? "true" : "false");
             });
-            filterBtn.className = "kh-filter-btn px-4 py-2 bg-primary text-on-primary font-data-sm text-data-sm rounded-lg shadow-[0_0_15px_rgba(0,212,255,0.4)] transition-all cursor-pointer";
 
             const cards = document.querySelectorAll("#knowledge-cards-container .kh-card");
             cards.forEach(card => {
@@ -1122,191 +1975,82 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnExportCSV = document.getElementById("btn-export-csv");
     if (btnExportCSV) btnExportCSV.addEventListener("click", exportHistoryCSV);
 
-    // 12. Compare Mode Dual Viewport Sync
+    // 12. Compare view
+    const btnCompareRefresh = document.getElementById("btn-compare-refresh");
+    const btnCompareSwap = document.getElementById("btn-compare-swap");
+    const selectA = document.getElementById("compare-select-a");
+    const selectB = document.getElementById("compare-select-b");
+
+    if (selectA) selectA.addEventListener("change", (e) => setCompareSlot("A", e.target.value));
+    if (selectB) selectB.addEventListener("change", (e) => setCompareSlot("B", e.target.value));
+    if (btnCompareSwap) btnCompareSwap.addEventListener("click", swapCompareSlots);
+    if (btnCompareRefresh) {
+        btnCompareRefresh.addEventListener("click", () => loadCompareRecords(true));
+    }
+
+    // Linked zoom. Both viewports are fixed-aspect boxes now, so a single scale
+    // factor per side is all this needs.
     const syncToggle = document.getElementById("syncToggle");
     const syncThumb = document.getElementById("syncThumb");
-    let syncActive = true;
     if (syncToggle && syncThumb) {
         syncToggle.addEventListener("click", () => {
-            syncActive = !syncActive;
-            if (syncActive) {
+            compareZoom.linked = !compareZoom.linked;
+            if (compareZoom.linked) {
                 syncThumb.style.transform = "translateX(0)";
-                syncToggle.className = "w-8 h-4 bg-primary/40 rounded-full relative ml-2 transition-colors duration-300";
-                toast("Viewport Sync Active", "info");
+                syncToggle.className = "w-9 h-5 rounded-full relative transition-colors duration-200 bg-primary/50 border border-primary/60";
+                syncToggle.setAttribute("aria-checked", "true");
+                // Re-link from A so the two images do not stay at whatever
+                // independent scales they drifted to while unlinked.
+                compareZoom.b = compareZoom.a;
+                applyCompareZoom();
+                toast("Zoom linked", "info");
             } else {
                 syncThumb.style.transform = "translateX(-16px)";
-                syncToggle.className = "w-8 h-4 bg-surface-container-high rounded-full relative ml-2 transition-colors duration-300";
-                toast("Viewport Sync Paused", "info");
+                syncToggle.className = "w-9 h-5 rounded-full relative transition-colors duration-200 bg-surface-container-high border border-outline";
+                syncToggle.setAttribute("aria-checked", "false");
+                toast("Zoom unlinked", "info");
             }
         });
     }
 
-    // Compare Viewport Zoom Sync Engine
-    let compareScale = 1.0;
-    const imgLeft = document.getElementById("img-compare-left");
-    const imgRight = document.getElementById("img-compare-right");
     const vLeft = document.getElementById("viewportLeft");
     const vRight = document.getElementById("viewportRight");
 
-    function updateCompareZoom(delta) {
-        compareScale = Math.max(0.5, Math.min(3.0, compareScale + delta));
-        if (imgLeft) imgLeft.style.transform = `scale(${compareScale})`;
-        if (syncActive && imgRight) imgRight.style.transform = `scale(${compareScale})`;
-    }
-
-    if (vLeft) {
-        vLeft.addEventListener("wheel", (e) => {
+    function wheelZoom(slot) {
+        return (e) => {
             e.preventDefault();
-            updateCompareZoom(e.deltaY < 0 ? 0.1 : -0.1);
-        }, { passive: false });
-    }
-
-    if (vRight) {
-        vRight.addEventListener("wheel", (e) => {
-            e.preventDefault();
-            if (syncActive) {
-                updateCompareZoom(e.deltaY < 0 ? 0.1 : -0.1);
-            } else if (imgRight) {
-                let currentScale = parseFloat(imgRight.style.transform.replace(/scale\((.*?)\)/, '$1')) || 1.0;
-                currentScale = Math.max(0.5, Math.min(3.0, currentScale + (e.deltaY < 0 ? 0.1 : -0.1)));
-                imgRight.style.transform = `scale(${currentScale})`;
+            const step = e.deltaY < 0 ? 0.1 : -0.1;
+            const clamp = (v) => Math.max(1.0, Math.min(4.0, v + step));
+            if (compareZoom.linked) {
+                compareZoom.a = clamp(compareZoom.a);
+                compareZoom.b = compareZoom.a;
+            } else if (slot === "A") {
+                compareZoom.a = clamp(compareZoom.a);
+            } else {
+                compareZoom.b = clamp(compareZoom.b);
             }
-        }, { passive: false });
-    }
-
-    // 13. Dynamic Compare Mode Uploads & Scan Sync
-    function setCompareSlotImage(slot, imageSrc, labelText, dateText) {
-        const isA = slot === 'A';
-        const imgEl = document.getElementById(isA ? "img-compare-left" : "img-compare-right");
-        const tagEl = document.getElementById(isA ? "tag-compare-a" : "tag-compare-b");
-        const dateEl = document.getElementById(isA ? "compare-a-date" : "compare-b-date");
-        const phEl = document.getElementById(isA ? "compare-a-placeholder" : "compare-b-placeholder");
-
-        if (imgEl) {
-            imgEl.src = imageSrc;
-            imgEl.classList.remove("hidden");
-        }
-        if (phEl) phEl.classList.add("hidden");
-        if (tagEl && labelText) {
-            tagEl.textContent = labelText;
-            tagEl.classList.remove("hidden");
-        }
-        if (dateEl) dateEl.textContent = dateText || new Date().toISOString().split('T')[0];
-
-        // The label is the source of the image, not a diagnosis. Nothing here is
-        // measured or compared: this view only places two scans side by side.
-        toast(`Loaded image into Scan ${slot}`, "success");
-    }
-
-    function handleCompareFileUpload(slot, file) {
-        if (!file || !file.type.startsWith("image/")) {
-            toast("Please select a valid image file", "error");
-            return;
-        }
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            setCompareSlotImage(slot, e.target.result, file.name.substring(0, 18), new Date().toISOString().split('T')[0]);
+            applyCompareZoom();
         };
-        reader.readAsDataURL(file);
     }
 
-    // Scan A Uploads & Drag-Drop
-    const btnUploadA = document.getElementById("btn-upload-compare-a");
-    const inputCompareA = document.getElementById("input-compare-a");
-    const dropOverlayA = document.getElementById("drop-overlay-a");
+    if (vLeft) vLeft.addEventListener("wheel", wheelZoom("A"), { passive: false });
+    if (vRight) vRight.addEventListener("wheel", wheelZoom("B"), { passive: false });
 
-    if (btnUploadA && inputCompareA) {
-        btnUploadA.addEventListener("click", () => inputCompareA.click());
-        inputCompareA.addEventListener("change", (e) => {
-            if (e.target.files.length > 0) handleCompareFileUpload('A', e.target.files[0]);
-        });
-    }
-
-    if (vLeft && dropOverlayA) {
-        vLeft.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            dropOverlayA.classList.remove("hidden");
-        });
-        vLeft.addEventListener("dragleave", (e) => {
-            e.preventDefault();
-            dropOverlayA.classList.add("hidden");
-        });
-        vLeft.addEventListener("drop", (e) => {
-            e.preventDefault();
-            dropOverlayA.classList.add("hidden");
-            if (e.dataTransfer.files.length > 0) handleCompareFileUpload('A', e.dataTransfer.files[0]);
-        });
-    }
-
-    // Scan B Uploads & Drag-Drop
-    const btnUploadB = document.getElementById("btn-upload-compare-b");
-    const inputCompareB = document.getElementById("input-compare-b");
-    const dropOverlayB = document.getElementById("drop-overlay-b");
-    const btnLoadCurrentB = document.getElementById("btn-load-current-to-b");
-
-    if (btnUploadB && inputCompareB) {
-        btnUploadB.addEventListener("click", () => inputCompareB.click());
-        inputCompareB.addEventListener("change", (e) => {
-            if (e.target.files.length > 0) handleCompareFileUpload('B', e.target.files[0]);
-        });
-    }
-
-    if (vRight && dropOverlayB) {
-        vRight.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            dropOverlayB.classList.remove("hidden");
-        });
-        vRight.addEventListener("dragleave", (e) => {
-            e.preventDefault();
-            dropOverlayB.classList.add("hidden");
-        });
-        vRight.addEventListener("drop", (e) => {
-            e.preventDefault();
-            dropOverlayB.classList.add("hidden");
-            if (e.dataTransfer.files.length > 0) handleCompareFileUpload('B', e.dataTransfer.files[0]);
-        });
-    }
-
-    function syncActiveScanToB() {
-        let imgSrc = null;
-        let label = "ACTIVE SCAN";
-
-        if (state.latestResult && state.latestResult.image_url) {
-            imgSrc = state.latestResult.image_url;
-            const topPred = state.latestResult.prediction;
-            const meta = PATHOLOGY_META[topPred];
-            label = meta ? `${topPred} (${meta.name})` : topPred;
-        } else if (state.selectedFile) {
-            const reader = new FileReader();
-            reader.onload = (e) => setCompareSlotImage('B', e.target.result, state.selectedFile.name, "TODAY");
-            reader.readAsDataURL(state.selectedFile);
-            return;
-        } else {
-            const viewportImg = document.getElementById("console-viewport-img");
-            if (viewportImg && viewportImg.src && !viewportImg.src.includes("placeholder")) {
-                imgSrc = viewportImg.src;
-            }
-        }
-
-        if (imgSrc) {
-            setCompareSlotImage('B', imgSrc, label, "TODAY");
-        } else {
-            toast("No active scan found in Console to load", "warning");
-        }
-    }
-
-    if (btnLoadCurrentB) {
-        btnLoadCurrentB.addEventListener("click", syncActiveScanToB);
-    }
-
-    // Auto-sync active scan when navigating to Compare View if available
-    const compareNavBtn = document.querySelector('[data-view="view-compare"]');
-    if (compareNavBtn) {
-        compareNavBtn.addEventListener("click", () => {
-            if (state.latestResult || state.selectedFile) {
-                setTimeout(syncActiveScanToB, 100);
-            }
-        });
+    // 13. Arriving at the comparison from a finished scan preselects it, which is
+    //     the only reason someone presses that button. The old handler tried to
+    //     push the console's *file* into slot B, which carried no model output
+    //     with it and so could not be compared against anything.
+    const btnResultsCompare = document.getElementById("btn-results-compare");
+    if (btnResultsCompare) {
+        // Capture phase on purpose. The button also carries `data-view`, so the
+        // router's own bubble-phase listener — registered first — would call
+        // navigate() before this ran, and loadCompareRecords() reads pendingA
+        // synchronously whenever history is already cached. The slot has to be
+        // parked before navigation, not after it.
+        btnResultsCompare.addEventListener("click", () => {
+            const id = state.latestResult && state.latestResult.session_id;
+            if (id) state.compare.pendingA = String(id);
+        }, true);
     }
 
     // Initial view load

@@ -73,6 +73,17 @@ class SkinCancerPredictor:
             with open(threshold_path, 'r') as f:
                 data = json.load(f)
                 self.thresholds = {k: data['per_class_metrics'][k]['threshold'] for k in self.classes}
+                # Keep the metrics recorded beside those thresholds. The UI states
+                # the model's melanoma recall in every summary it writes, and that
+                # figure was previously a literal in the frontend - it would have
+                # gone on asserting 0.800 through any retrain, silently, with
+                # nothing in the pipeline able to notice. Reading it from the file
+                # that ships with the weights ties it to the served checkpoint.
+                self.class_metrics = {
+                    k: dict(data['per_class_metrics'].get(k, {}))
+                    for k in self.classes
+                }
+                self.thresholds_fitted_on = data.get('fitted_on')
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load per-class thresholds from {threshold_path}: {e}. "

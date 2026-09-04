@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Depends, Header
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import os
@@ -16,7 +17,7 @@ from ..config import (UPLOAD_DIR, ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, ADMIN_TO
 from ..ml_engine import SkinCancerPredictor
 from ..logging_setup import get_logger, get_request_id
 from ..storage import (new_upload_name, to_stored_path, delete_stored_file,
-                       PARTIAL_SUFFIX)
+                       resolve_stored_path, PARTIAL_SUFFIX)
 from .. import metrics
 
 log = get_logger("diagnostics")
@@ -214,12 +215,28 @@ def analyze_lesion(
             "melanoma_alert": session.melanoma_alert,
             "melanoma_probability": session.melanoma_probability,
             "heatmap_base64": result.get("heatmap_base64"),
+            # Server-side timings for this request, kept apart for the same
+            # reason they are measured apart: `inference_ms` is the forward pass
+            # alone, `queue_ms` the wait for a concurrency slot. Reported as one
+            # number they would describe load, not the model.
+            "inference_ms": round(inference_ms, 1),
+            "queue_ms": round(queue_ms, 1),
             # Real measurements from the OOD gate, plus its calibration state.
             # The UI reports these; it must never assert a gate result it was
             # not given.
             "ood_metrics": result.get("ood_metrics"),
             "ood_calibrated": result.get("ood_calibrated", False),
             "ood_feature_stage_active": result.get("ood_feature_stage_active", False),
+            # The measured operating point of the configuration that produced
+            # this result, read from models/class_thresholds.json. Sent with the
+            # result rather than served once at startup so the figure the client
+            # prints is the one belonging to the checkpoint that answered this
+            # request, even if the model is swapped underneath it.
+            "operating_point": {
+                "melanoma_recall": predictor.class_metrics.get("mel", {}).get("recall"),
+                "melanoma_precision": predictor.class_metrics.get("mel", {}).get("precision"),
+                "thresholds_fitted_on": predictor.thresholds_fitted_on,
+            },
         }
     except HTTPException:
         raise
@@ -284,6 +301,30 @@ def require_history_access(x_admin_token: str = Header(default="")):
         raise HTTPException(401, detail="Invalid or missing X-Admin-Token header.")
 
 
+def _session_summary(s):
+    """The fields the history list and the comparison view both read.
+
+    One serialiser for both so a field added for the comparison view cannot go
+    missing from the list, which is where the comparison view picks records from.
+    """
+    return {
+        "id": s.id,
+        "prediction": s.prediction,
+        "confidence": s.confidence,
+        "is_high_risk": s.is_high_risk,
+        "anatomic_site": s.anatomic_site,
+        "melanoma_alert": s.melanoma_alert,
+        "melanoma_probability": s.melanoma_probability,
+        "threshold_used": s.threshold_used,
+        "scores": s.all_scores,
+        "created_at": _utc_isoformat(s.created_at),
+        # The comparison view needs to know whether an image is still on disk
+        # before it offers a record for side-by-side inspection. Retention and
+        # the orphan sweep can remove the file while the row survives.
+        "has_image": resolve_stored_path(s.image_path) is not None,
+    }
+
+
 @router.get("/history", dependencies=[Depends(require_history_access)])
 def get_history(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
     """Return completed diagnostic sessions ordered by newest first."""
@@ -294,19 +335,51 @@ def get_history(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_
         .limit(limit)
         .all()
     )
-    return [
-        {
-            "id": s.id,
-            "prediction": s.prediction,
-            "confidence": s.confidence,
-            "is_high_risk": s.is_high_risk,
-            "anatomic_site": s.anatomic_site,
-            "melanoma_alert": s.melanoma_alert,
-            "scores": s.all_scores,
-            "created_at": _utc_isoformat(s.created_at),
-        }
-        for s in sessions
-    ]
+    return [_session_summary(s) for s in sessions]
+
+
+@router.get("/history/{session_id}", dependencies=[Depends(require_history_access)])
+def get_history_entry(session_id: int, db: Session = Depends(get_db)):
+    """One completed session, for the side-by-side comparison view."""
+    session = (
+        db.query(DiagnosticSession)
+        .filter(DiagnosticSession.id == session_id,
+                DiagnosticSession.status == "completed")
+        .first()
+    )
+    if not session:
+        raise HTTPException(404, detail="Session not found")
+    return _session_summary(session)
+
+
+@router.get("/history/{session_id}/image", dependencies=[Depends(require_history_access)])
+def get_history_image(session_id: int, db: Session = Depends(get_db)):
+    """The stored image for a session.
+
+    Comparing two recorded scans is only useful with the pictures in front of
+    you, and there was previously no way to retrieve one — the comparison view
+    could show uploads it had no data for, or data it had no picture for, but
+    never both. The path comes from the database, never from the caller, and is
+    still resolved through `resolve_stored_path`, which refuses anything outside
+    the upload directory.
+    """
+    session = (
+        db.query(DiagnosticSession)
+        .filter(DiagnosticSession.id == session_id,
+                DiagnosticSession.status == "completed")
+        .first()
+    )
+    if not session:
+        raise HTTPException(404, detail="Session not found")
+
+    path = resolve_stored_path(session.image_path)
+    if not path or not os.path.isfile(path):
+        # Retention and the orphan sweep can outlive the row that referred to
+        # the file. Say so rather than returning a 500 or an empty body.
+        raise HTTPException(404, detail="The image for this session is no longer stored.")
+
+    # A record's image never changes, and the id is the whole identity.
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.delete("/history/all", dependencies=[Depends(require_admin)])
