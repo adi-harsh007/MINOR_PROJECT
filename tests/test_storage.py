@@ -238,3 +238,48 @@ def test_retention_removes_old_sessions_and_their_images(uploads):
 
     assert not (uploads / ORPHAN).exists()
     assert (uploads / KEPT).exists()
+
+
+# ── cross-platform paths ─────────────────────────────────────────────────
+# These assertions must hold identically on Windows and on Linux. os.path.isabs
+# only recognises the host's own convention, so a database written on one and
+# served on the other had every stored path misread as a bare filename - the
+# exact "install moved" case this module exists to survive. It also made the
+# suite pass locally and fail in CI.
+
+WINDOWS_PATH = "D:" + chr(92) + "app" + chr(92) + "data" + chr(92) + "uploads" \
+    + chr(92) + ORPHAN
+POSIX_PATH = "/srv/app/data/uploads/" + ORPHAN
+UNC_PATH = chr(92) * 2 + "server" + chr(92) + "share" + chr(92) + ORPHAN
+
+
+@pytest.mark.parametrize("path", [WINDOWS_PATH, POSIX_PATH, UNC_PATH])
+def test_foreign_absolute_paths_are_recognised_on_any_host(path):
+    assert storage.looks_absolute(path) is True
+
+
+@pytest.mark.parametrize("path", [ORPHAN, "sub/dir/" + ORPHAN, ""])
+def test_relative_paths_are_not_mistaken_for_absolute(path):
+    assert storage.looks_absolute(path) is False
+
+
+@pytest.mark.parametrize("path", [WINDOWS_PATH, POSIX_PATH, UNC_PATH])
+def test_a_path_from_another_install_never_resolves_into_this_one(uploads, path):
+    """It must answer None, not silently join itself under UPLOAD_DIR.
+
+    Joined, it would name a file inside the upload directory that this record
+    does not own - and resolve_stored_path feeds os.remove.
+    """
+    assert storage.resolve_stored_path(path) is None
+
+
+@pytest.mark.parametrize("path", [WINDOWS_PATH, POSIX_PATH])
+def test_migration_rehomes_a_path_from_another_platform(uploads, path):
+    """A database carried between Windows and Linux still finds its images."""
+    make_file(uploads, ORPHAN)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM diagnostic_sessions"))
+        insert(conn, 9020, path)
+        storage.migrate_absolute_paths(conn)
+        assert rows(conn)[9020] == ORPHAN
+        conn.execute(text("DELETE FROM diagnostic_sessions"))

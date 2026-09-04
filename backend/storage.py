@@ -62,6 +62,22 @@ def to_stored_path(absolute_path):
     return relative.replace(os.sep, "/")
 
 
+# A drive-lettered path ("D:\...") or a UNC share. os.path.isabs only recognises
+# the host's own convention, so a database written on Windows and served on Linux
+# - or the reverse - would have every stored path misread as a bare filename.
+# That is precisely the "the install moved" case this module exists to survive.
+_FOREIGN_ABSOLUTE = re.compile(r"^([A-Za-z]:[\\/]|\\\\)")
+
+
+def looks_absolute(stored):
+    """Absolute on any platform, not just this one."""
+    if not stored:
+        return False
+    if stored.startswith("/") or _FOREIGN_ABSOLUTE.match(stored):
+        return True
+    return os.path.isabs(stored)
+
+
 def is_within_uploads(path):
     """Is `path` inside UPLOAD_DIR?
 
@@ -90,7 +106,8 @@ def resolve_stored_path(stored):
     if not stored:
         return None
 
-    candidate = stored if os.path.isabs(stored) else os.path.join(UPLOAD_DIR, stored)
+    candidate = (stored if looks_absolute(stored)
+                 else os.path.join(UPLOAD_DIR, stored))
     candidate = os.path.abspath(candidate)
 
     if not is_within_uploads(candidate):
@@ -132,7 +149,7 @@ def migrate_absolute_paths(connection):
     repaired = 0
     skipped = 0
     for row_id, stored in rows:
-        if not os.path.isabs(stored):
+        if not looks_absolute(stored):
             continue
 
         if is_within_uploads(stored):
