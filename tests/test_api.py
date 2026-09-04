@@ -238,6 +238,84 @@ def test_melanoma_alert_is_reported_and_persisted(client, lesion):
 
 
 @pytest.mark.slow
+def test_operating_point_comes_from_the_served_threshold_file(client, lesion,
+                                                              project_root):
+    """The recall the UI states must be read, not remembered.
+
+    Every summary the interface writes quotes this model's melanoma recall. It
+    used to be the literal 0.800 typed into `buildClinicalSummary()`, which would
+    have gone on asserting itself through any retrain with nothing in the
+    pipeline able to notice. It is now read out of the same
+    models/class_thresholds.json the predictor refuses to start without, so a new
+    checkpoint moves the number the client prints.
+    """
+    import json
+
+    with open(os.path.join(project_root, "models", "class_thresholds.json")) as f:
+        shipped = json.load(f)
+
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    point = body["operating_point"]
+
+    assert point["melanoma_recall"] == shipped["per_class_metrics"]["mel"]["recall"]
+    assert point["melanoma_precision"] == shipped["per_class_metrics"]["mel"]["precision"]
+    assert point["thresholds_fitted_on"] == shipped.get("fitted_on")
+
+
+def test_threshold_file_carries_the_metrics_the_ui_quotes(project_root):
+    """The recall the interface prints has to be in the file it claims to read.
+
+    Deliberately tests the reader rather than a constructed predictor, so it runs
+    in CI: models/latest.pt is gitignored and absent there, but
+    models/class_thresholds.json is tracked. A rename or a silently empty dict
+    here is exactly how the hardcoded 0.800 would creep back into the summary.
+    """
+    from backend.ml_engine import read_threshold_file
+
+    classes = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+    thresholds, metrics, fitted_on = read_threshold_file(
+        os.path.join(project_root, "models", "class_thresholds.json"), classes)
+
+    assert set(thresholds) == set(classes)
+    assert set(metrics) == set(classes)
+    assert "recall" in metrics["mel"], "the summary has nothing to quote without this"
+    assert 0.0 <= metrics["mel"]["recall"] <= 1.0
+    assert isinstance(fitted_on, (str, type(None)))
+
+
+@pytest.mark.requires_model
+def test_predictor_exposes_the_metrics_beside_its_thresholds():
+    """And the predictor carries them through to the response builder."""
+    from backend.routers.diagnostics import get_predictor
+
+    predictor = get_predictor()
+    assert set(predictor.class_metrics) == set(predictor.classes)
+    assert "recall" in predictor.class_metrics["mel"]
+    assert 0.0 <= predictor.class_metrics["mel"]["recall"] <= 1.0
+
+
+@pytest.mark.slow
+def test_analyze_reports_its_own_timings(client, lesion):
+    """The UI shows these two numbers, so they have to be real and separate.
+
+    The results panel previously printed a hardcoded "142ms" that no code path
+    ever wrote to, because the response carried no timing at all. Inference and
+    queue wait are measured apart on purpose - summed, "inference" would climb
+    with concurrency and stop describing the model - so both must survive to the
+    client as distinct fields.
+    """
+    body = client.post("/api/analyze",
+                       files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+
+    assert isinstance(body["inference_ms"], (int, float))
+    assert isinstance(body["queue_ms"], (int, float))
+    # A forward pass cannot take zero time; an unloaded queue legitimately can.
+    assert body["inference_ms"] > 0
+    assert body["queue_ms"] >= 0
+
+
+@pytest.mark.slow
 def test_alert_fires_whenever_melanoma_probability_clears_threshold(client, lesion):
     """The alert must not depend on melanoma winning the argmax."""
     from backend.routers.diagnostics import get_predictor
@@ -268,6 +346,103 @@ def test_temperature_is_applied_to_confidence():
 def test_history_limit_is_bounded(client):
     assert client.get("/api/history?limit=0").status_code == 422
     assert client.get("/api/history?limit=500").status_code == 422
+
+
+# ── record retrieval, for the side-by-side comparison view ───────────────
+# The comparison view is built entirely on these two endpoints: without them it
+# could only ever show loose uploads it had no model output for, which is what
+# it did before.
+
+@pytest.mark.slow
+def test_history_detail_carries_everything_the_comparison_shows(client, lesion):
+    """A single record must expose every field the comparison view prints."""
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")},
+                          data={"site": "Anterior Torso"}).json()
+
+    body = client.get(f"/api/history/{created['session_id']}").json()
+
+    for field in ("id", "prediction", "confidence", "scores", "is_high_risk",
+                  "anatomic_site", "melanoma_alert", "melanoma_probability",
+                  "threshold_used", "created_at", "has_image"):
+        assert field in body, f"{field} missing from the history detail payload"
+
+    assert body["id"] == created["session_id"]
+    assert body["prediction"] == created["prediction"]
+    assert set(body["scores"]) == set(created["scores"])
+    assert body["has_image"] is True
+
+
+@pytest.mark.slow
+def test_history_list_and_detail_agree(client, lesion):
+    """Both are rendered by one serialiser; they must not drift apart.
+
+    The list is what the comparison pickers read and the detail is what the
+    comparison itself reads, so a field present in one and absent from the other
+    shows up as a record that changes when you select it.
+    """
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    row = next(r for r in client.get("/api/history").json()
+               if r["id"] == created["session_id"])
+    assert client.get(f"/api/history/{created['session_id']}").json() == row
+
+
+def test_history_detail_404s_for_an_unknown_id(client):
+    assert client.get("/api/history/99999999").status_code == 404
+
+
+@pytest.mark.slow
+def test_history_image_serves_the_stored_upload(client, lesion):
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+
+    r = client.get(f"/api/history/{created['session_id']}/image")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/")
+    # Round-trips as a decodable image, not just as bytes.
+    Image.open(io.BytesIO(r.content)).verify()
+
+
+def test_history_image_404s_for_an_unknown_id(client):
+    assert client.get("/api/history/99999999/image").status_code == 404
+
+
+@pytest.mark.slow
+def test_history_image_reports_a_missing_file_as_404(client, lesion, monkeypatch):
+    """Retention and the orphan sweep outlive the rows that referred to files.
+
+    A record whose image is gone has to say so, not raise. The client uses this
+    to show the record's numbers with a placeholder where the picture was.
+    """
+    import backend.routers.diagnostics as diagnostics
+
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    monkeypatch.setattr(diagnostics, "resolve_stored_path", lambda stored: None)
+
+    r = client.get(f"/api/history/{created['session_id']}/image")
+    assert r.status_code == 404
+    assert "no longer stored" in r.json()["detail"]
+
+
+@pytest.mark.slow
+def test_record_endpoints_honour_the_history_read_guard(client, lesion,
+                                                        monkeypatch, admin_headers):
+    """Both new endpoints expose the same rows /history does, so both are gated."""
+    import backend.routers.diagnostics as diagnostics
+
+    created = client.post("/api/analyze",
+                          files={"file": ("lesion.jpg", lesion, "image/jpeg")}).json()
+    session_id = created["session_id"]
+
+    monkeypatch.setattr(diagnostics, "REQUIRE_HISTORY_TOKEN", True)
+    assert client.get(f"/api/history/{session_id}").status_code == 401
+    assert client.get(f"/api/history/{session_id}/image").status_code == 401
+    assert client.get(f"/api/history/{session_id}",
+                      headers=admin_headers).status_code == 200
+    assert client.get(f"/api/history/{session_id}/image",
+                      headers=admin_headers).status_code == 200
 
 
 # ── serving-configuration guards ─────────────────────────────────────────

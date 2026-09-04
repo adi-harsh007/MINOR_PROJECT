@@ -63,6 +63,28 @@ def decision_config():
     }
 
 
+def read_threshold_file(threshold_path, classes):
+    """Decision thresholds and the metrics recorded beside them.
+
+    Split out of the predictor so it can be tested without the checkpoint:
+    models/latest.pt is gitignored and absent in CI, but models/class_thresholds.json
+    is tracked, and it is the file the interface quotes this model's melanoma recall
+    from. That figure used to be a literal in the frontend, where a retrain would
+    have left it asserting the old number indefinitely; a reader that silently
+    returned empty metrics would put it straight back in that position, so the
+    parsing needs coverage that actually runs.
+
+    Returns (thresholds, per-class metrics, the file's own `fitted_on` label).
+    """
+    with open(threshold_path, 'r') as f:
+        data = json.load(f)
+
+    per_class = data['per_class_metrics']
+    thresholds = {k: per_class[k]['threshold'] for k in classes}
+    metrics = {k: dict(per_class.get(k, {})) for k in classes}
+    return thresholds, metrics, data.get('fitted_on')
+
+
 class SkinCancerPredictor:
     def __init__(self, model_path=MODEL_PATH, threshold_path=THRESHOLD_PATH):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -70,9 +92,9 @@ class SkinCancerPredictor:
         
         # Load thresholds
         try:
-            with open(threshold_path, 'r') as f:
-                data = json.load(f)
-                self.thresholds = {k: data['per_class_metrics'][k]['threshold'] for k in self.classes}
+            (self.thresholds,
+             self.class_metrics,
+             self.thresholds_fitted_on) = read_threshold_file(threshold_path, self.classes)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load per-class thresholds from {threshold_path}: {e}. "
