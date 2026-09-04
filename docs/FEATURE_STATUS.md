@@ -22,6 +22,7 @@ planned work in the present tense and listed capabilities that were never built.
 | Analytics view | `view-analytics` | Scan counts and class distribution computed client-side from history. |
 | Side-by-side comparison | `renderCompare()` | Two **recorded** scans chosen from history. Shows both stored images, per-class softmax for each with the arithmetic difference B − A, and every persisted field (prediction, confidence, high-risk flag, melanoma alert, p(mel), decision threshold, site, timestamps). Reads `GET /api/history/{id}` and `GET /api/history/{id}/image`. Differences are between two model outputs; nothing about the skin is measured, and the view says so. |
 | Knowledge reference | `view-knowledge` | Static reference cards for the 7 classes. |
+| Model card | `loadModelCard()` | Publishes the recorded evaluation from `GET /api/model`: accuracy, macro F1, ECE, the melanoma operating point (recall, surfaced, review rate), a per-class table with the live thresholds, and the confusion matrix. Leads with whether those figures were measured under the thresholds actually being served. Every number is read from a file; an unavailable artifact is reported as unavailable. |
 | History search / filter | `history-search-input` | Filters the table by record id, class code or pathology name. |
 | CSV export | history view | Client-side download of the history table, including the anatomic site. |
 | OOD gate readout | `renderOodPanel()` | Shows the statistics the gate measured on this image (`rel_contrast`, `hf_ratio`, `blue_green`) and states plainly whether the thresholds are fitted and whether the feature-space stage ran. |
@@ -74,7 +75,9 @@ entry was wrong and has been moved to the implemented table above.)
   `docs/evaluation_serving_check.json` — so that label describes where the *thresholds*
   were fitted, not where those metrics were measured. The API passes the value through
   as `operating_point.thresholds_fitted_on` and the UI does not restate the split,
-  because the served artifact does not establish it.
+  because the served artifact does not establish it. The model card shows the label
+  verbatim under Serving configuration, so the ambiguity is visible rather than
+  hidden behind a figure.
 
 - **Deleting requires `ADMIN_TOKEN` to be set server-side.** With it unset the API
   returns 403 and the UI reports deletion as disabled, which is the default state.

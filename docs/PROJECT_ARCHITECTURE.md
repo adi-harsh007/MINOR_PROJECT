@@ -87,14 +87,24 @@ Rejected scans are not persisted, and their uploaded file is deleted.
 | :--- | :--- | :--- |
 | `POST` | `/api/analyze` | Inference and OOD gating. Returns `session_id`, `prediction`, `confidence`, `threshold`, `scores`, `is_high_risk`, `anatomic_site`, `heatmap_base64`. |
 | `GET` | `/api/history` | Completed sessions, newest first. `limit` is bounded to 1–200. |
+| `GET` | `/api/history/{id}` | One session. Adds `threshold_used`, `melanoma_probability` and `has_image` to what the list carries. Read by the comparison view. |
+| `GET` | `/api/history/{id}/image` | The stored upload for a session. Path comes from the database and is resolved through `resolve_stored_path()`; 404 when retention or the orphan sweep has removed the file. |
 | `DELETE` | `/api/history/all` | Deletes every session and its image. **Requires `X-Admin-Token`.** |
 | `DELETE` | `/api/history/{id}` | Deletes one session. **Requires `X-Admin-Token`.** |
 | `GET` | `/api/health` | Serving configuration: architecture, checkpoint name and presence, input size, and whether the model has been loaded yet. Does not trigger a load. |
+| `GET` | `/api/model` | The model card: serving configuration, decision layer, per-class thresholds and the metrics recorded beside them, and the evaluation from `docs/evaluation_results.json`. Reports `evaluation_describes_this_configuration` by comparing the thresholds the evaluation ran under against the ones in use. Reads files only — it does not load the checkpoint. |
 
 Both `DELETE` endpoints return 403 when `ADMIN_TOKEN` is unset, which is the
 default — they are disabled unless deliberately enabled.
 
 There is no server-side PDF export endpoint. Report export is client-side only.
+
+`/api/model` degrades rather than guesses: with `EVALUATION_PATH` or
+`SERVING_CHECK_PATH` absent it reports `evaluation_available: false` and
+`evaluation_describes_this_configuration: null`, and the interface says so
+instead of showing blanks. Both default to `docs/` and are overridable by
+environment variable; the container image copies those two JSON files and
+nothing else from `docs/`.
 
 `is_high_risk` is true for `mel`, `bcc`, and `akiec`. Note this groups `akiec`
 (pre-malignant) with the malignant classes; the flag is a triage hint, not a

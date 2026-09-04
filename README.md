@@ -172,6 +172,8 @@ Verified against the source. Anything not listed here does not exist.
 #### `routers/diagnostics.py`
 - `POST /api/analyze` — validates the upload, runs inference, records the session.
 - `GET /api/history` — completed sessions, newest first (`limit` 1–200).
+- `GET /api/history/{id}` — one session, with the fields the list omits.
+- `GET /api/history/{id}/image` — the stored upload for a session.
 - `DELETE /api/history/all` and `DELETE /api/history/{id}` — both require `X-Admin-Token`
   and are disabled (403) while `ADMIN_TOKEN` is unset.
 - `require_admin(x_admin_token)` — the guard for both delete routes.

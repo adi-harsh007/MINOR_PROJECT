@@ -32,6 +32,11 @@ COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY samples/ ./samples/
 
+# The recorded evaluation, which /api/model publishes. Only the two JSON
+# artifacts: the rest of docs/ is prose and PDFs that would bloat the image, and
+# the endpoint degrades honestly if they are absent anyway.
+COPY docs/evaluation_results.json docs/evaluation_serving_check.json ./docs/
+
 # Written to at run time; a named volume should be mounted over it so history
 # and uploaded images survive a container replacement.
 RUN mkdir -p /app/data/uploads /app/models

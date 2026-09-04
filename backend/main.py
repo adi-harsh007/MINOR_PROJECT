@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from .config import (CORS_ORIGINS, FRONTEND_DIR, SAMPLES_DIR, MODEL_PATH,
                      MAX_CONCURRENT_INFERENCE, TORCH_NUM_THREADS,
                      MAX_UPLOAD_BYTES, RATE_LIMIT_PER_MINUTE,
                      ANALYZE_RATE_LIMIT_PER_MINUTE, REQUIRE_HISTORY_TOKEN,
-                     UPLOAD_RETENTION_DAYS)
+                     UPLOAD_RETENTION_DAYS, EVALUATION_PATH, SERVING_CHECK_PATH)
 from .database import init_db
 from .routers import diagnostics
 from . import metrics, ratelimit
@@ -226,6 +227,103 @@ def health_check():
             "delete_endpoints_enabled": bool(os.getenv("ADMIN_TOKEN")),
             "upload_retention_days": UPLOAD_RETENTION_DAYS or None,
         },
+    }
+
+
+def _read_json(path):
+    """Optional artifact. Absent or unreadable is a reportable state, not a crash."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _serving_check_thresholds(check):
+    """The thresholds the recorded evaluation was measured under."""
+    if not isinstance(check, dict):
+        return None
+    thresholds = check.get("thresholds")
+    return thresholds if isinstance(thresholds, dict) else None
+
+
+@app.get("/api/model")
+def model_card():
+    """What this deployment is serving, and what it measured.
+
+    The repository's whole premise is honest measurement, and until now none of
+    it reached the interface: accuracy, per-class recall and the confusion matrix
+    sat in docs/ where only someone reading the source would find them, while the
+    UI stated a single recall figure hardcoded in JavaScript.
+
+    Everything here is read from files. Nothing is computed, rounded up or filled
+    in, and a missing artifact is reported as missing.
+
+    Deliberately does not touch the predictor, for the same reason /api/health
+    does not: the checkpoint is loaded lazily on the first analysis and a page
+    view should not pull it into memory. The thresholds come from the same file
+    the predictor reads.
+    """
+    from .ml_engine import decision_config, read_threshold_file
+
+    classes = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+
+    thresholds = None
+    threshold_metrics = None
+    thresholds_fitted_on = None
+    try:
+        thresholds, threshold_metrics, thresholds_fitted_on = read_threshold_file(
+            THRESHOLD_PATH, classes)
+    except Exception as e:
+        log.warning("model card: thresholds unreadable at %s: %s", THRESHOLD_PATH, e)
+
+    evaluation = _read_json(EVALUATION_PATH)
+    check = _read_json(SERVING_CHECK_PATH)
+
+    # Does the recorded evaluation describe what this server is actually doing?
+    #
+    # Publishing figures beside a model they were not measured on is the failure
+    # this guards against: the numbers would look authoritative and be about a
+    # different decision rule. Comparable only when both the live thresholds and
+    # the thresholds the evaluation ran under are known - otherwise the answer is
+    # "unknown", which the UI must be able to say.
+    recorded_thresholds = _serving_check_thresholds(check)
+    threshold_mismatches = []
+    describes_this_configuration = None
+    if thresholds and recorded_thresholds:
+        for cls in classes:
+            live = thresholds.get(cls)
+            recorded = recorded_thresholds.get(cls)
+            if live is None or recorded is None or abs(float(live) - float(recorded)) > 1e-9:
+                threshold_mismatches.append({
+                    "class": cls, "serving": live, "evaluated_with": recorded,
+                })
+        describes_this_configuration = not threshold_mismatches
+
+    return {
+        "architecture": MODEL_ARCH,
+        "backbone": "EfficientNet-B3",
+        "input_size": IMG_SIZE,
+        "classes": classes,
+        "dataset": "HAM10000",
+        "checkpoint": {
+            "name": os.path.basename(MODEL_PATH),
+            "present": os.path.exists(MODEL_PATH),
+            "loaded": diagnostics._predictor is not None,
+        },
+        "decision_layer": decision_config(),
+        "thresholds": thresholds,
+        # Precision, recall and F1 as recorded beside each threshold. Note that
+        # `thresholds_fitted_on` describes where the thresholds were fitted, not
+        # necessarily the split these metrics were measured on - see the note in
+        # docs/FEATURE_STATUS.md. The label is passed through verbatim rather
+        # than reinterpreted here.
+        "threshold_metrics": threshold_metrics,
+        "thresholds_fitted_on": thresholds_fitted_on,
+        "evaluation": evaluation,
+        "evaluation_available": evaluation is not None,
+        "evaluation_describes_this_configuration": describes_this_configuration,
+        "evaluation_threshold_mismatches": threshold_mismatches,
     }
 
 

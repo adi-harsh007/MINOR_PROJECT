@@ -5,7 +5,7 @@
 A defect-driven pass over the whole application. Every figure quoted below was
 measured on this machine; nothing here is estimated.
 
-Test suite: **41 → 102 tests**. A lint gate was added. The served model, its
+Test suite: **41 → 107 tests**. A lint gate was added. The served model, its
 weights and its decision thresholds are unchanged — no retraining happened and
 no published metric moved.
 
@@ -57,6 +57,40 @@ is now a single class toggle against component styles (`.nav-item.is-active`,
 no longer drift apart. Several of those strings referenced `bg-surface-elevated`,
 `bg-surface-base` and `border-surface-elevated`, which were never defined in the
 Tailwind config and silently rendered as nothing.
+
+### A model card, from figures that were already measured
+
+The repository's premise is honest measurement, and none of it reached the
+interface. Accuracy, per-class recall, calibration error and the confusion matrix
+sat in `docs/` where only someone reading the source would find them, while the
+UI asserted a single recall figure hardcoded in JavaScript. `GET /api/model` now
+publishes them, and a **Model card** view renders them: headline metrics, the
+melanoma operating point, a per-class table carrying the live decision
+thresholds, the confusion matrix, the serving configuration read from the running
+process, and the limits.
+
+**The page leads with whether the figures are even about this model.** Publishing
+measured numbers beside a configuration they were not measured on would make the
+page worse than not having one, so the endpoint compares the thresholds recorded
+in `docs/evaluation_serving_check.json` against the ones the server is actually
+using and answers in three states: they match, they differ (naming which classes
+and both values), or it cannot tell. The interface renders each differently, and
+an absent artifact reports as `evaluation_available: false` rather than as
+blanks. Nothing is computed in the client beyond percentage formatting.
+
+Two details worth recording. The confusion matrix in `evaluation_results.json` is
+a bare 7×7 array with **no class labels of its own**, so the axes are labelled
+with the order `/api/model` declares — an assumption that would mislabel every
+cell while looking entirely plausible if an evaluation run ever wrote a different
+order. It is now pinned by a test to two independent properties of the same file:
+each row must sum to that class's recorded support, and each diagonal ratio must
+reproduce its recorded recall. And the matrix is shaded per row rather than
+globally, because NV is 1000 of 1503 images and a global scale renders every
+other row blank.
+
+The container image previously copied no part of `docs/`, so the endpoint would
+have reported no evaluation inside it. The Dockerfile now copies the two JSON
+artifacts and nothing else — the rest is prose and PDFs.
 
 ### The quoted melanoma recall is read, not remembered
 

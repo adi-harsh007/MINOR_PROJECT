@@ -708,6 +708,100 @@ def test_history_can_be_put_behind_the_admin_token(client, monkeypatch,
     assert client.get("/api/history", headers=admin_headers).status_code == 200
 
 
+# ── model card ───────────────────────────────────────────────────────────
+# /api/model publishes the recorded evaluation. These figures carry more weight
+# than anything else the interface shows, so the endpoint has to be right about
+# whose numbers they are.
+
+def test_model_card_reports_the_serving_configuration(client):
+    """Readable without a checkpoint: it reads files, it does not load the model."""
+    body = client.get("/api/model").json()
+
+    assert body["backbone"] == "EfficientNet-B3"
+    assert body["classes"] == ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+    assert body["thresholds"] is not None, "thresholds ship with the repo"
+    assert set(body["thresholds"]) == set(body["classes"])
+    assert "readout" in body["decision_layer"]
+    # Publishing a page about the model must not drag 123 MB into memory.
+    assert body["checkpoint"]["loaded"] is False or body["checkpoint"]["present"]
+
+
+def test_model_card_says_whether_the_evaluation_matches_what_is_served(client):
+    """The whole point: numbers measured under other thresholds are not ours."""
+    body = client.get("/api/model").json()
+
+    if not body["evaluation_available"]:
+        pytest.skip("no evaluation artifact in this checkout")
+
+    assert body["evaluation_describes_this_configuration"] is True, (
+        "the shipped evaluation should have been measured under the shipped "
+        f"thresholds; mismatches: {body['evaluation_threshold_mismatches']}")
+    assert body["evaluation_threshold_mismatches"] == []
+
+
+def test_model_card_flags_an_evaluation_measured_under_other_thresholds(client,
+                                                                       monkeypatch,
+                                                                       tmp_path):
+    """A drifted evaluation must be called out, not quietly published."""
+    import json
+    import backend.main as main
+
+    check = json.loads(open(main.SERVING_CHECK_PATH, encoding="utf-8").read())
+    check["thresholds"]["mel"] = 0.99          # not what the server is using
+    drifted = tmp_path / "drifted.json"
+    drifted.write_text(json.dumps(check), encoding="utf-8")
+    monkeypatch.setattr(main, "SERVING_CHECK_PATH", str(drifted))
+
+    body = client.get("/api/model").json()
+    assert body["evaluation_describes_this_configuration"] is False
+    mismatch = [m for m in body["evaluation_threshold_mismatches"] if m["class"] == "mel"]
+    assert mismatch and mismatch[0]["evaluated_with"] == 0.99
+
+
+def test_model_card_degrades_when_the_evaluation_is_absent(client, monkeypatch,
+                                                           tmp_path):
+    """Absent artifacts are reported as absent. Nothing is filled in."""
+    import backend.main as main
+
+    monkeypatch.setattr(main, "EVALUATION_PATH", str(tmp_path / "nope.json"))
+    monkeypatch.setattr(main, "SERVING_CHECK_PATH", str(tmp_path / "nope2.json"))
+
+    body = client.get("/api/model").json()
+    assert body["evaluation_available"] is False
+    assert body["evaluation"] is None
+    assert body["evaluation_describes_this_configuration"] is None
+    # The serving configuration is still reported - that part needs no artifact.
+    assert body["thresholds"] is not None
+
+
+def test_confusion_matrix_axes_are_in_the_order_the_api_declares(client):
+    """The matrix carries no class labels of its own.
+
+    docs/evaluation_results.json stores `confusion_matrix` as a bare 7x7 array
+    with no `classes` key, and the model card labels its axes with the order
+    /api/model declares. If an evaluation run ever writes a different order, the
+    page would mislabel every cell while looking entirely plausible - so the
+    order is pinned to two independent properties of the same file: each row must
+    sum to that class's recorded support, and each diagonal ratio must reproduce
+    its recorded recall.
+    """
+    body = client.get("/api/model").json()
+    if not body["evaluation_available"]:
+        pytest.skip("no evaluation artifact in this checkout")
+
+    classes = body["classes"]
+    matrix = body["evaluation"]["confusion_matrix"]
+    per_class = body["evaluation"]["per_class"]
+
+    assert len(matrix) == len(classes)
+    for i, cls in enumerate(classes):
+        row_total = sum(matrix[i])
+        assert row_total == per_class[cls]["support"], (
+            f"row {i} sums to {row_total}, but {cls} has support "
+            f"{per_class[cls]['support']} - the axes are not in this order")
+        assert matrix[i][i] / row_total == pytest.approx(per_class[cls]["recall"])
+
+
 def test_health_reports_which_hardening_is_active(client):
     hardening = client.get("/api/health").json()["hardening"]
     assert hardening["max_upload_mb"] >= 1

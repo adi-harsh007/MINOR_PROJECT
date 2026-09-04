@@ -29,7 +29,8 @@ const state = {
     history: [],
     // The two records the comparison view is showing, plus a slot id parked by
     // the results view on its way here.
-    compare: { a: null, b: null, pendingA: null }
+    compare: { a: null, b: null, pendingA: null },
+    modelCard: null
 };
 
 // ─── Pathology Class Descriptions & Codes ───────────────────────────────────
@@ -217,6 +218,8 @@ function navigate(viewId, payload = null) {
         loadAnalyticsData();
     } else if (viewId === "view-compare") {
         loadCompareRecords();
+    } else if (viewId === "view-model") {
+        loadModelCard();
     } else if (viewId === "view-results" && payload) {
         renderResultsView(payload);
     }
@@ -1803,6 +1806,287 @@ function renderCompare() {
 }
 
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Model card
+
+   Reads /api/model, which reads files. Nothing here computes a metric — the
+   client formats percentages and derives the "one in N" gloss, and that is all.
+   Where the server reports an artifact as unavailable this says so, because the
+   alternative on a page whose whole point is honest measurement is worse than a
+   blank.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const MODEL_CARD_CLASS_ORDER = ["mel", "bcc", "akiec", "nv", "bkl", "df", "vasc"];
+
+function mcPct(value, digits = 1) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    return `${(value * 100).toFixed(digits)}%`;
+}
+
+function mcNum(value, digits = 3) {
+    if (typeof value !== "number" || !isFinite(value)) return "—";
+    return value.toFixed(digits);
+}
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+// Does the recorded evaluation describe the configuration actually running?
+// Printing measured figures beside a model they were not measured on would make
+// this page worse than having none, so the answer leads the page.
+function renderModelProvenance(card) {
+    const box = document.getElementById("model-provenance");
+    const icon = document.getElementById("model-provenance-icon");
+    const text = document.getElementById("model-provenance-text");
+    if (!box || !icon || !text) return;
+
+    const base = "px-4 py-3 rounded-xl border flex items-start gap-3";
+    const iconBase = "material-symbols-outlined text-[22px] shrink-0";
+
+    if (!card.evaluation_available) {
+        box.className = `${base} border-risk-mid/45 bg-risk-mid/10`;
+        icon.className = `${iconBase} text-risk-mid`;
+        icon.textContent = "warning";
+        text.textContent =
+            "No recorded evaluation is available to this server, so the figures below cannot be " +
+            "shown. The serving configuration is still reported.";
+        return;
+    }
+
+    if (card.evaluation_describes_this_configuration === true) {
+        box.className = `${base} border-risk-low/45 bg-risk-low/10`;
+        icon.className = `${iconBase} text-risk-low`;
+        icon.textContent = "check_circle";
+        text.textContent =
+            "These figures were measured under the same per-class decision thresholds this server " +
+            "is using, so they describe the configuration you are running.";
+        return;
+    }
+
+    if (card.evaluation_describes_this_configuration === false) {
+        const differing = (card.evaluation_threshold_mismatches || [])
+            .map(m => `${m.class.toUpperCase()} ${m.evaluated_with} → ${m.serving}`).join(", ");
+        box.className = `${base} border-risk-high/45 bg-risk-high/10`;
+        icon.className = `${iconBase} text-risk-high`;
+        icon.textContent = "error";
+        text.textContent =
+            "The recorded evaluation was measured under different decision thresholds from the ones " +
+            `this server is using (${differing}). The figures below do not describe this ` +
+            "configuration and should not be quoted for it.";
+        return;
+    }
+
+    box.className = `${base} border-outline-variant bg-surface-container`;
+    icon.className = `${iconBase} text-on-surface-variant`;
+    icon.textContent = "help";
+    text.textContent =
+        "Whether these figures describe the running configuration could not be established: the " +
+        "server has the evaluation but not the record of which thresholds it was measured under.";
+}
+
+function renderModelHeadline(evaluation) {
+    if (!evaluation) {
+        ["model-accuracy", "model-macro-f1", "model-mel-recall", "model-ece"]
+            .forEach(id => setText(id, "—"));
+        setText("model-testset", "Evaluation unavailable");
+        setText("model-mel-recall-note", "—");
+        return;
+    }
+
+    setText("model-accuracy", mcPct(evaluation.accuracy));
+    setText("model-macro-f1", mcNum(evaluation.macro_f1));
+    setText("model-mel-recall", mcNum(evaluation.melanoma_recall));
+    setText("model-ece", mcNum(evaluation.ece));
+
+    setText("model-testset", typeof evaluation.test_set_size === "number"
+        ? `${evaluation.test_set_size.toLocaleString()} held-out images`
+        : "—");
+
+    const recall = evaluation.melanoma_recall;
+    if (typeof recall === "number" && recall < 0.995 && recall >= 0) {
+        const missed = Math.round(1 / (1 - recall));
+        setText("model-mel-recall-note", missed >= 2
+            ? `Roughly one melanoma in ${missed} missed by the prediction`
+            : "Missed by the prediction");
+    } else {
+        setText("model-mel-recall-note", "—");
+    }
+}
+
+function renderModelOperatingPoint(evaluation) {
+    const recall = evaluation && evaluation.melanoma_recall;
+    const surfaced = evaluation && evaluation.melanoma_surfaced;
+    const review = evaluation && evaluation.review_rate;
+
+    setText("model-op-recall", mcPct(recall));
+    setText("model-op-surfaced", mcPct(surfaced));
+    setText("model-op-review", mcPct(review));
+
+    if (typeof recall !== "number" || typeof surfaced !== "number") {
+        setText("model-op-prose", "Evaluation unavailable.");
+        return;
+    }
+
+    const missedByPrediction = 1 - recall;
+    const missedEntirely = 1 - surfaced;
+    const reviewText = typeof review === "number"
+        ? ` That costs a review rate of ${mcPct(review)} — about ${Math.round(review * 100)} scans in every 100 are put in front of a human.`
+        : "";
+
+    setText("model-op-prose",
+        `The prediction alone misses ${mcPct(missedByPrediction)} of melanomas. With the alert ` +
+        `channel included, ${mcPct(missedEntirely)} are missed entirely — that is the number a ` +
+        `patient would care about.${reviewText}`);
+}
+
+function renderModelPerClass(card) {
+    const tbody = document.getElementById("model-per-class");
+    if (!tbody) return;
+
+    const perClass = (card.evaluation && card.evaluation.per_class) || {};
+    const thresholds = card.thresholds || {};
+
+    tbody.innerHTML = MODEL_CARD_CLASS_ORDER.map(cls => {
+        const meta = PATHOLOGY_META[cls] || { name: cls.toUpperCase() };
+        const m = perClass[cls] || {};
+        const isHigh = HIGH_RISK_CLASSES.includes(cls);
+        return `
+            <tr class="border-b border-outline-variant/60">
+                <td class="py-3 px-5 ${isHigh ? 'border-l-2 border-l-risk-high/60' : ''}">
+                    <span class="text-[13px] text-on-surface">${meta.name}</span>
+                    <span class="font-data-sm text-[12px] text-on-surface-muted ml-1.5">${cls.toUpperCase()}</span>
+                </td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${
+                    typeof m.support === "number" ? m.support : "—"}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${
+                    typeof thresholds[cls] === "number" ? thresholds[cls].toFixed(2) : "—"}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${mcNum(m.precision)}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface">${mcNum(m.recall)}</td>
+                <td class="py-3 px-5 text-right font-data-sm text-[13px] tabular text-on-surface-variant">${mcNum(m.f1)}</td>
+            </tr>`;
+    }).join("");
+}
+
+function renderModelConfusion(card) {
+    const table = document.getElementById("model-confusion");
+    if (!table) return;
+    const tbody = table.querySelector("tbody");
+
+    const matrix = card.evaluation && card.evaluation.confusion_matrix;
+    const classes = card.classes || [];
+
+    if (!Array.isArray(matrix) || !matrix.length) {
+        tbody.innerHTML =
+            `<tr><td class="py-6 text-[13px] text-on-surface-muted">Evaluation unavailable.</td></tr>`;
+        setText("model-confusion-note", "—");
+        return;
+    }
+
+    // Shade by share of the true-class row, not of the whole matrix: NV is 1000
+    // of 1503 images, so a global scale would render every other row blank.
+    const rowTotals = matrix.map(row => row.reduce((a, b) => a + b, 0));
+
+    const header = `
+        <tr>
+            <th class="label py-2 pr-3 text-left">True \\ Pred</th>
+            ${classes.map(c => `<th class="label py-2 px-2 text-center">${c.toUpperCase()}</th>`).join("")}
+            <th class="label py-2 pl-3 text-right">Total</th>
+        </tr>`;
+
+    const rows = matrix.map((row, i) => {
+        const total = rowTotals[i] || 1;
+        const cells = row.map((value, j) => {
+            const share = value / total;
+            const onDiagonal = i === j;
+            // Correct predictions read as presence, errors as a warning; an
+            // empty cell is left plain so the eye lands on real mistakes.
+            const bg = value === 0 ? "transparent"
+                : onDiagonal ? `rgba(111,192,164,${(0.10 + share * 0.55).toFixed(3)})`
+                             : `rgba(232,116,108,${(0.10 + share * 0.75).toFixed(3)})`;
+            const strong = value > 0 && share >= 0.08;
+            return `<td class="py-2 px-2 text-center font-data-sm text-[13px] tabular ${
+                strong ? "text-on-surface font-semibold" : "text-on-surface-variant"
+            }" style="background:${bg}" title="${classes[i].toUpperCase()} predicted as ${
+                classes[j].toUpperCase()}: ${value} of ${total}">${value}</td>`;
+        }).join("");
+        return `
+            <tr class="border-b border-outline-variant/40">
+                <td class="py-2 pr-3 text-[13px] text-on-surface whitespace-nowrap">${classes[i].toUpperCase()}</td>
+                ${cells}
+                <td class="py-2 pl-3 text-right font-data-sm text-[13px] tabular text-on-surface-muted">${rowTotals[i]}</td>
+            </tr>`;
+    }).join("");
+
+    tbody.innerHTML = header + rows;
+
+    // Name the single largest confusion rather than leaving the reader to hunt.
+    let worst = null;
+    matrix.forEach((row, i) => row.forEach((value, j) => {
+        if (i !== j && (!worst || value > worst.value)) worst = { i, j, value };
+    }));
+    if (worst && worst.value > 0) {
+        const trueName = (PATHOLOGY_META[classes[worst.i]] || {}).name || classes[worst.i];
+        const predName = (PATHOLOGY_META[classes[worst.j]] || {}).name || classes[worst.j];
+        const share = worst.value / (rowTotals[worst.i] || 1);
+        setText("model-confusion-note",
+            `Largest single confusion: ${worst.value} ${trueName} images predicted as ` +
+            `${predName} — ${mcPct(share)} of all ${trueName} in the set.`);
+    } else {
+        setText("model-confusion-note", "—");
+    }
+}
+
+function renderModelConfig(card) {
+    const tbody = document.getElementById("model-config");
+    if (!tbody) return;
+
+    const d = card.decision_layer || {};
+    const cp = card.checkpoint || {};
+    const rows = [
+        ["Backbone", `${card.backbone || "—"} (${card.architecture || "—"})`],
+        ["Input size", typeof card.input_size === "number" ? `${card.input_size} px` : "—"],
+        ["Training data", card.dataset || "—"],
+        ["Checkpoint", `${cp.name || "—"}${cp.present ? "" : " — not present on this server"}`],
+        ["Loaded", cp.loaded ? "Yes" : "Not yet — loads on the first scan"],
+        ["Readout", d.readout || "—"],
+        ["Temperature", mcNum(d.temperature, 2)],
+        ["Melanoma alert threshold", d.mel_alert_threshold != null ? mcNum(d.mel_alert_threshold, 2) : "Disabled"],
+        ["Decision layer calibrated", d.calibration_loaded ? "Yes" : "No — serving defaults"],
+        ["Thresholds fitted on", card.thresholds_fitted_on || "Not recorded"],
+    ];
+
+    tbody.innerHTML = rows.map(([k, v]) => `
+        <tr class="border-b border-outline-variant/60">
+            <td class="py-3 px-5 text-[13px] text-on-surface-variant w-1/3">${k}</td>
+            <td class="py-3 px-5 text-[13px] text-on-surface">${v}</td>
+        </tr>`).join("");
+}
+
+async function loadModelCard() {
+    let card;
+    try {
+        card = await apiCall("/model");
+    } catch (err) {
+        toast("Could not load the model card: " + err.message, "error");
+        return;
+    }
+    state.modelCard = card;
+
+    renderModelProvenance(card);
+    renderModelHeadline(card.evaluation);
+    renderModelOperatingPoint(card.evaluation);
+    renderModelPerClass(card);
+    renderModelConfusion(card);
+    renderModelConfig(card);
+
+    setText("model-subtitle", card.evaluation && card.evaluation.test_set_size
+        ? `EfficientNet-B3 on HAM10000, measured on ${card.evaluation.test_set_size.toLocaleString()} held-out images.`
+        : "What this deployment serves, and what it measured.");
+}
+
+
 // ─── Setup Event Listeners ──────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
     // 1. Sidebar & Inter-View SPA Router
@@ -1974,6 +2258,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // 11. CSV Export Button
     const btnExportCSV = document.getElementById("btn-export-csv");
     if (btnExportCSV) btnExportCSV.addEventListener("click", exportHistoryCSV);
+
+    // 11b. Model card
+    const btnModelRefresh = document.getElementById("btn-model-refresh");
+    if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelCard);
 
     // 12. Compare view
     const btnCompareRefresh = document.getElementById("btn-compare-refresh");
