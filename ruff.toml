@@ -1,0 +1,24 @@
+# Lint configuration.
+#
+# Deliberately narrow. This codebase was never linted, and ruff's default rules
+# report 158 findings across it - almost all import ordering and naming style.
+# A gate that fails on its first run gets switched off, so this selects the
+# rules that catch genuine defects:
+#
+#   F   pyflakes      - undefined names, unused imports, shadowed variables,
+#                       f-strings with no placeholders, duplicate arguments
+#   E9  syntax        - errors that stop the file parsing at all
+#
+# It already earned its place: it found a stale `import uuid` left behind when
+# the error reference switched to the request id.
+#
+# Widening this is a deliberate follow-up, one rule family at a time with the
+# resulting churn reviewed - not something to enable wholesale.
+line-length = 100
+
+[lint]
+select = ["F", "E9"]
+
+[lint.per-file-ignores]
+# Test fixtures rebind and import for side effects before the app is imported.
+"tests/conftest.py" = ["E402"]
