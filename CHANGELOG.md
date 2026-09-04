@@ -5,7 +5,7 @@
 A defect-driven pass over the whole application. Every figure quoted below was
 measured on this machine; nothing here is estimated.
 
-Test suite: **41 → 101 tests**. A lint gate was added. The served model, its
+Test suite: **41 → 102 tests**. A lint gate was added. The served model, its
 weights and its decision thresholds are unchanged — no retraining happened and
 no published metric moved.
 

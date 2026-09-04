@@ -263,14 +263,34 @@ def test_operating_point_comes_from_the_served_threshold_file(client, lesion,
     assert point["thresholds_fitted_on"] == shipped.get("fitted_on")
 
 
+def test_threshold_file_carries_the_metrics_the_ui_quotes(project_root):
+    """The recall the interface prints has to be in the file it claims to read.
+
+    Deliberately tests the reader rather than a constructed predictor, so it runs
+    in CI: models/latest.pt is gitignored and absent there, but
+    models/class_thresholds.json is tracked. A rename or a silently empty dict
+    here is exactly how the hardcoded 0.800 would creep back into the summary.
+    """
+    from backend.ml_engine import read_threshold_file
+
+    classes = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+    thresholds, metrics, fitted_on = read_threshold_file(
+        os.path.join(project_root, "models", "class_thresholds.json"), classes)
+
+    assert set(thresholds) == set(classes)
+    assert set(metrics) == set(classes)
+    assert "recall" in metrics["mel"], "the summary has nothing to quote without this"
+    assert 0.0 <= metrics["mel"]["recall"] <= 1.0
+    assert isinstance(fitted_on, (str, type(None)))
+
+
+@pytest.mark.requires_model
 def test_predictor_exposes_the_metrics_beside_its_thresholds():
-    """The threshold file is the pairing point between weights and reported numbers."""
+    """And the predictor carries them through to the response builder."""
     from backend.routers.diagnostics import get_predictor
 
     predictor = get_predictor()
     assert set(predictor.class_metrics) == set(predictor.classes)
-    # Whatever the file records for melanoma has to survive the load intact; a
-    # silently empty dict here is how a stale figure would creep back in.
     assert "recall" in predictor.class_metrics["mel"]
     assert 0.0 <= predictor.class_metrics["mel"]["recall"] <= 1.0
 
